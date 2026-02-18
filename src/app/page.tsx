@@ -26,6 +26,9 @@ export default function HomePage() {
   const [meta, setMeta] = useState<AppUserMeta | null>(null);
   const [loadingMeta, setLoadingMeta] = useState(true);
 
+  // 🔒 NEW: sayfa açılır açılmaz giriş kontrol (flicker olmasın)
+  const [checkingAuth, setCheckingAuth] = useState(true);
+
   const logoSrc = useMemo(() => "/logo.png", []);
 
   useEffect(() => {
@@ -33,9 +36,12 @@ export default function HomePage() {
       setFbUser(u);
       setLoadingMeta(true);
 
+      // 🔒 NEW: giriş yoksa direkt auth'a at
       if (!u) {
         setMeta(null);
         setLoadingMeta(false);
+        setCheckingAuth(false);
+        router.replace("/auth");
         return;
       }
 
@@ -46,7 +52,8 @@ export default function HomePage() {
 
         const data = snap.exists() ? (snap.data() as any) : null;
         const role: AppRole = data?.role === "admin" ? "admin" : "user";
-        const accountType: AccountType = data?.accountType === "pro" ? "pro" : "user";
+        const accountType: AccountType =
+          data?.accountType === "pro" ? "pro" : "user";
 
         setMeta({
           role,
@@ -64,11 +71,12 @@ export default function HomePage() {
         });
       } finally {
         setLoadingMeta(false);
+        setCheckingAuth(false);
       }
     });
 
     return () => unsub();
-  }, []);
+  }, [router]);
 
   const isAuthed = !!fbUser;
   const isAdmin = meta?.role === "admin";
@@ -79,8 +87,20 @@ export default function HomePage() {
   const handleLogout = async () => {
     closeDrawer();
     await signOut(auth);
-    router.push("/auth");
+    router.replace("/auth");
   };
+
+  // 🔒 NEW: auth kontrol ekranı (sayfa göz kırpmasın)
+  if (checkingAuth) {
+    return (
+      <div className="min-h-screen bg-zinc-950 text-white flex items-center justify-center">
+        <div className="text-sm text-zinc-300">Giriş kontrol ediliyor…</div>
+      </div>
+    );
+  }
+
+  // 🔒 NEW: ekstra emniyet (router.replace zaten yapıyor)
+  if (!isAuthed) return null;
 
   return (
     <div className="min-h-screen bg-zinc-950 text-white relative overflow-hidden">
@@ -136,37 +156,19 @@ export default function HomePage() {
             </div>
 
             <div className="flex items-center gap-2">
-              {!isAuthed ? (
-                <>
-                  <Link
-                    href="/auth"
-                    className="hidden sm:inline-flex items-center justify-center rounded-2xl px-4 py-2 border border-zinc-800/70 bg-zinc-950/40 hover:bg-zinc-900/50 text-sm font-semibold transition"
-                  >
-                    Giriş Yap
-                  </Link>
-                  <Link
-                    href="/discover"
-                    className="inline-flex items-center justify-center rounded-2xl px-4 py-2 bg-orange-500 hover:bg-orange-400 text-black text-sm font-extrabold transition shadow-[0_18px_60px_rgba(249,115,22,0.26)]"
-                  >
-                    Usta Bul
-                  </Link>
-                </>
-              ) : (
-                <>
-                  <Link
-                    href="/discover"
-                    className="inline-flex items-center justify-center rounded-2xl px-4 py-2 bg-orange-500 hover:bg-orange-400 text-black text-sm font-extrabold transition shadow-[0_18px_60px_rgba(249,115,22,0.26)]"
-                  >
-                    Usta Bul
-                  </Link>
-                  <button
-                    onClick={handleLogout}
-                    className="hidden sm:inline-flex items-center justify-center rounded-2xl px-4 py-2 border border-zinc-800/70 bg-zinc-950/40 hover:bg-zinc-900/50 text-sm font-semibold transition"
-                  >
-                    Çıkış
-                  </button>
-                </>
-              )}
+              {/* Artık giriş zorunlu: sadece Usta Bul + Çıkış */}
+              <Link
+                href="/discover"
+                className="inline-flex items-center justify-center rounded-2xl px-4 py-2 bg-orange-500 hover:bg-orange-400 text-black text-sm font-extrabold transition shadow-[0_18px_60px_rgba(249,115,22,0.26)]"
+              >
+                Usta Bul
+              </Link>
+              <button
+                onClick={handleLogout}
+                className="hidden sm:inline-flex items-center justify-center rounded-2xl px-4 py-2 border border-zinc-800/70 bg-zinc-950/40 hover:bg-zinc-900/50 text-sm font-semibold transition"
+              >
+                Çıkış
+              </button>
             </div>
           </div>
         </div>
@@ -200,21 +202,12 @@ export default function HomePage() {
                 Usta Bul
               </Link>
 
-              {!isAuthed ? (
-                <Link
-                  href="/auth"
-                  className="inline-flex items-center justify-center rounded-2xl px-5 py-3 border border-zinc-800/70 bg-zinc-950/40 hover:bg-zinc-900/50 text-sm font-semibold transition"
-                >
-                  Google ile Giriş
-                </Link>
-              ) : (
-                <Link
-                  href="/messages"
-                  className="inline-flex items-center justify-center rounded-2xl px-5 py-3 border border-zinc-800/70 bg-zinc-950/40 hover:bg-zinc-900/50 text-sm font-semibold transition"
-                >
-                  Mesajlara Git
-                </Link>
-              )}
+              <Link
+                href="/messages"
+                className="inline-flex items-center justify-center rounded-2xl px-5 py-3 border border-zinc-800/70 bg-zinc-950/40 hover:bg-zinc-900/50 text-sm font-semibold transition"
+              >
+                Mesajlara Git
+              </Link>
             </div>
 
             <div className="mt-8 grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -230,10 +223,7 @@ export default function HomePage() {
                 title="Kolay İletişim"
                 desc="Ustaya ulaş, konuş, anlaş; hızlı çözüm."
               />
-              <FeatureCard
-                title="Güvenli Giriş"
-                desc="Google ile tek dokunuş."
-              />
+              <FeatureCard title="Güvenli Giriş" desc="Google ile tek dokunuş." />
             </div>
           </div>
 
@@ -247,14 +237,28 @@ export default function HomePage() {
                 </div>
               </div>
               <div className="text-xs text-zinc-400">
-                {loadingMeta ? "Kontrol ediliyor…" : isAuthed ? "Aktif" : "Misafir"}
+                {loadingMeta ? "Kontrol ediliyor…" : "Aktif"}
               </div>
             </div>
 
             <div className="mt-6 grid grid-cols-1 gap-3">
-              <QuickLink href="/discover" title="Usta Bul" subtitle="Meslek & şehir seçerek ara" badge="Önerilen" />
-              <QuickLink href="/vip" title="VIP Planları" subtitle="Herkese açık • premium avantajlar" badge="VIP" />
-              <QuickLink href="/messages" title="Mesajlar" subtitle="Ustalardan gelen mesajlara ulaş" />
+              <QuickLink
+                href="/discover"
+                title="Usta Bul"
+                subtitle="Meslek & şehir seçerek ara"
+                badge="Önerilen"
+              />
+              <QuickLink
+                href="/vip"
+                title="VIP Planları"
+                subtitle="Herkese açık • premium avantajlar"
+                badge="VIP"
+              />
+              <QuickLink
+                href="/messages"
+                title="Mesajlar"
+                subtitle="Ustalardan gelen mesajlara ulaş"
+              />
 
               {isPro && (
                 <QuickLink
@@ -274,15 +278,17 @@ export default function HomePage() {
                 />
               )}
 
-              <QuickLink href="/settings" title="Ayarlar" subtitle="Görünüm, hesap, bildirimler" />
+              <QuickLink
+                href="/settings"
+                title="Ayarlar"
+                subtitle="Görünüm, hesap, bildirimler"
+              />
             </div>
 
             <div className="mt-8 rounded-2xl border border-zinc-800/70 bg-zinc-950/40 p-4">
               <div className="text-sm font-semibold">Durum</div>
               <div className="mt-1 text-xs text-zinc-300">
-                {isAuthed
-                  ? `Hoş geldin, ${meta?.displayName ?? "Kullanıcı"}`
-                  : "Misafir modundasın. Giriş yaparsan mesajlar ve profil aktif olur."}
+                Hoş geldin, {meta?.displayName ?? "Kullanıcı"}
               </div>
             </div>
           </div>
@@ -298,7 +304,6 @@ export default function HomePage() {
         <div className="relative">
           <div className="absolute inset-0 rounded-2xl blur-xl opacity-35 bg-orange-500 group-hover:opacity-55 transition" />
           <div className="relative h-14 w-14 rounded-2xl bg-orange-500 hover:bg-orange-400 text-black shadow-[0_18px_70px_rgba(249,115,22,0.35)] border border-orange-200/30 flex items-center justify-center transition">
-            {/* chat icon */}
             <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
               <path
                 d="M7 8h10M7 12h6m-8 9 2.2-3.3A9 9 0 1 1 21 12a9 9 0 0 1-9 9c-1.2 0-2.4-.2-3.5-.6L5 21Z"
@@ -350,23 +355,53 @@ export default function HomePage() {
 
             <div className="mt-4 rounded-2xl border border-zinc-800/70 bg-zinc-950/40 p-3">
               <div className="text-sm font-semibold">
-                {loadingMeta ? "Yükleniyor…" : isAuthed ? (meta?.displayName ?? "Kullanıcı") : "Misafir"}
+                {loadingMeta ? "Yükleniyor…" : meta?.displayName ?? "Kullanıcı"}
               </div>
               <div className="mt-1 text-xs text-zinc-300">
-                {isAuthed ? "Hesabın aktif. Menüler kullanıma hazır." : "Giriş yaparak tüm özellikleri aç."}
+                Hesabın aktif. Menüler kullanıma hazır.
               </div>
             </div>
 
             <nav className="mt-4 grid gap-2">
-              <DrawerItem href="/discover" title="Usta Bul" desc="Meslek & şehir seçerek ara" onClick={closeDrawer} />
-              <DrawerItem href="/vip" title="VIP Planları" desc="Herkese açık" onClick={closeDrawer} />
-              <DrawerItem href="/settings" title="Ayarlar" desc="Görünüm, hesap, bildirim" onClick={closeDrawer} />
+              <DrawerItem
+                href="/discover"
+                title="Usta Bul"
+                desc="Meslek & şehir seçerek ara"
+                onClick={closeDrawer}
+              />
+              <DrawerItem
+                href="/vip"
+                title="VIP Planları"
+                desc="Herkese açık"
+                onClick={closeDrawer}
+              />
+              <DrawerItem
+                href="/settings"
+                title="Ayarlar"
+                desc="Görünüm, hesap, bildirim"
+                onClick={closeDrawer}
+              />
 
               <div className="h-px bg-zinc-800/70 my-2" />
 
-              <DrawerItem href="/profile" title="Kullanıcı Profili" desc="Profilini görüntüle" onClick={closeDrawer} />
-              <DrawerItem href="/profile/edit" title="Profil Düzenle" desc="Bilgilerini güncelle" onClick={closeDrawer} />
-              <DrawerItem href="/messages" title="Mesajlar" desc="Ustalardan gelen mesajlar" onClick={closeDrawer} />
+              <DrawerItem
+                href="/profile"
+                title="Kullanıcı Profili"
+                desc="Profilini görüntüle"
+                onClick={closeDrawer}
+              />
+              <DrawerItem
+                href="/profile/edit"
+                title="Profil Düzenle"
+                desc="Bilgilerini güncelle"
+                onClick={closeDrawer}
+              />
+              <DrawerItem
+                href="/messages"
+                title="Mesajlar"
+                desc="Ustalardan gelen mesajlar"
+                onClick={closeDrawer}
+              />
 
               {isPro && (
                 <DrawerItem
@@ -390,24 +425,27 @@ export default function HomePage() {
 
               <div className="h-px bg-zinc-800/70 my-2" />
 
-              <DrawerItem href="/support" title="Canlı Destek" desc="Hızlı yardım" onClick={closeDrawer} />
+              <DrawerItem
+                href="/support"
+                title="Canlı Destek"
+                desc="Hızlı yardım"
+                onClick={closeDrawer}
+              />
 
-              {!isAuthed ? (
-                <DrawerItem href="/auth" title="Giriş Yap" desc="Google ile giriş" badge="Giriş" onClick={closeDrawer} />
-              ) : (
-                <button
-                  onClick={handleLogout}
-                  className="text-left w-full rounded-2xl border border-zinc-800/70 bg-zinc-950/40 hover:bg-zinc-900/50 transition px-4 py-3"
-                >
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <div className="text-sm font-semibold">Çıkış Yap</div>
-                      <div className="mt-0.5 text-xs text-zinc-300">Hesabından çık</div>
+              <button
+                onClick={handleLogout}
+                className="text-left w-full rounded-2xl border border-zinc-800/70 bg-zinc-950/40 hover:bg-zinc-900/50 transition px-4 py-3"
+              >
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="text-sm font-semibold">Çıkış Yap</div>
+                    <div className="mt-0.5 text-xs text-zinc-300">
+                      Hesabından çık
                     </div>
-                    <span className="text-xs text-zinc-400">→</span>
                   </div>
-                </button>
-              )}
+                  <span className="text-xs text-zinc-400">→</span>
+                </div>
+              </button>
             </nav>
 
             <div className="mt-4 text-[11px] text-zinc-500">
