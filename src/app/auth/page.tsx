@@ -8,7 +8,8 @@ import {
   signInWithPopup,
   onAuthStateChanged,
 } from "firebase/auth";
-import { auth } from "@/lib/firebase";
+import { doc, getDoc, setDoc, serverTimestamp } from "firebase/firestore";
+import { auth, db } from "@/lib/firebase";
 
 export default function AuthPage() {
   const router = useRouter();
@@ -42,13 +43,53 @@ export default function AuthPage() {
     return "Giriş sırasında bir sorun oluştu. Lütfen tekrar dene.";
   }, [err]);
 
+  const ensureUserDoc = async (user: any) => {
+    // ✅ Document ID = user.uid
+    const userRef = doc(db, "users", user.uid);
+    const snap = await getDoc(userRef);
+
+    if (!snap.exists()) {
+      await setDoc(
+        userRef,
+        {
+          role: "user", // admin yapacaksan sonra panelden/seed ile değiştiririz
+          accountType: "user", // pro olunca "pro" yapacağız
+          displayName: user.displayName || "Kullanıcı",
+          email: user.email || null,
+          photoURL: user.photoURL || null,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true }
+      );
+    } else {
+      // ufak update (opsiyonel)
+      await setDoc(
+        userRef,
+        {
+          updatedAt: serverTimestamp(),
+          displayName: user.displayName || "Kullanıcı",
+          email: user.email || null,
+          photoURL: user.photoURL || null,
+        },
+        { merge: true }
+      );
+    }
+  };
+
   const loginWithGoogle = async () => {
     setErr(null);
     setLoading(true);
+
     try {
       const provider = new GoogleAuthProvider();
       provider.setCustomParameters({ prompt: "select_account" });
-      await signInWithPopup(auth, provider);
+
+      const result = await signInWithPopup(auth, provider);
+
+      // ✅ Firestore users/{uid} oluştur
+      await ensureUserDoc(result.user);
+
       router.replace("/discover");
     } catch (e: any) {
       console.error(e);

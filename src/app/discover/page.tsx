@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { onAuthStateChanged, signOut, User } from "firebase/auth";
-import { doc, getDoc } from "firebase/firestore";
+import { collection, doc, getDoc, getDocs, query, where } from "firebase/firestore";
 import { auth, db } from "@/lib/firebase";
 
 type Step = "home" | "category" | "city" | "results";
@@ -21,8 +21,8 @@ type City = { plate: string; name: string };
 
 type Pro = {
   id: string;
-  name: string;
-  title: string;
+  companyName: string;
+  displayName: string;
   city: string;
   categoryId: string;
   rating: number;
@@ -32,7 +32,12 @@ type Pro = {
 
 type AppRole = "admin" | "user";
 type AccountType = "pro" | "user";
-type AppUserMeta = { role: AppRole; accountType: AccountType; displayName?: string };
+type AppUserMeta = {
+  role: AppRole;
+  accountType: AccountType;
+  displayName?: string;
+  proId?: string; // pro doc id
+};
 
 const CITIES: City[] = [
   { plate: "01", name: "Adana" },
@@ -119,7 +124,6 @@ const CITIES: City[] = [
 ];
 
 const CATEGORIES: Category[] = [
-  // Elektrik & Arıza
   { id: "elektrik_ariza", name: "Elektrik Arıza", emoji: "⚡", group: "Elektrik & Arıza" },
   { id: "elektrik_tesisat", name: "Elektrik Tesisatı", emoji: "🧰", group: "Elektrik & Arıza" },
   { id: "sigorta_pano", name: "Sigorta / Pano", emoji: "🧯", group: "Elektrik & Arıza" },
@@ -128,7 +132,6 @@ const CATEGORIES: Category[] = [
   { id: "kacak_akim", name: "Kaçak Akım / Topraklama", emoji: "🛡️", group: "Elektrik & Arıza" },
   { id: "zil_interkom", name: "Zil / Interkom", emoji: "🔔", group: "Elektrik & Arıza" },
 
-  // Su Tesisat & Arıza
   { id: "su_tesisat", name: "Su Tesisatı", emoji: "🚰", group: "Su Tesisat & Arıza" },
   { id: "su_kacak", name: "Su Kaçağı Tespiti", emoji: "🕵️", group: "Su Tesisat & Arıza" },
   { id: "gider_tikanikligi", name: "Gider / Tıkanıklık Açma", emoji: "🌀", group: "Su Tesisat & Arıza" },
@@ -136,7 +139,6 @@ const CATEGORIES: Category[] = [
   { id: "rezervuar", name: "Rezervuar / Klozet", emoji: "🚽", group: "Su Tesisat & Arıza" },
   { id: "pis_su", name: "Pis Su / Kanal Hattı", emoji: "🧱", group: "Su Tesisat & Arıza" },
 
-  // Doğalgaz / Kombi / Isıtma
   { id: "dogalgaz", name: "Doğalgaz Tesisatı", emoji: "🔥", group: "Doğalgaz • Kombi • Isıtma" },
   { id: "kombi_servis", name: "Kombi Servisi", emoji: "🛠️", group: "Doğalgaz • Kombi • Isıtma" },
   { id: "petek_temizleme", name: "Petek Temizleme", emoji: "♨️", group: "Doğalgaz • Kombi • Isıtma" },
@@ -144,12 +146,10 @@ const CATEGORIES: Category[] = [
   { id: "yerden_isitma", name: "Yerden Isıtma", emoji: "🧯", group: "Doğalgaz • Kombi • Isıtma" },
   { id: "kazan_daire", name: "Kazan Dairesi İşleri", emoji: "🏭", group: "Doğalgaz • Kombi • Isıtma" },
 
-  // Klima / Havalandırma
   { id: "klima_montaj", name: "Klima Montaj", emoji: "❄️", group: "Klima & Havalandırma" },
   { id: "klima_ariza", name: "Klima Arıza", emoji: "🧊", group: "Klima & Havalandırma" },
   { id: "havalandirma", name: "Havalandırma", emoji: "🌬️", group: "Klima & Havalandırma" },
 
-  // Duvar • Boya • Alçı • Alçıpan
   { id: "boya_badana", name: "Boya / Badana", emoji: "🎨", group: "Duvar • Boya • Alçı" },
   { id: "siva", name: "Sıva", emoji: "🧱", group: "Duvar • Boya • Alçı" },
   { id: "alci", name: "Alçı", emoji: "🪣", group: "Duvar • Boya • Alçı" },
@@ -158,7 +158,6 @@ const CATEGORIES: Category[] = [
   { id: "duvar_kagidi", name: "Duvar Kağıdı", emoji: "🧻", group: "Duvar • Boya • Alçı" },
   { id: "catlak_tamir", name: "Duvar Çatlak Tamiri", emoji: "🩹", group: "Duvar • Boya • Alçı" },
 
-  // Zemin • Fayans • Seramik • Şap
   { id: "fayans", name: "Fayans", emoji: "🧩", group: "Zemin • Fayans • Şap" },
   { id: "seramik", name: "Seramik", emoji: "🧱", group: "Zemin • Fayans • Şap" },
   { id: "granit", name: "Granit / Porselen", emoji: "🪨", group: "Zemin • Fayans • Şap" },
@@ -166,7 +165,6 @@ const CATEGORIES: Category[] = [
   { id: "parke", name: "Parke / Laminant", emoji: "🪵", group: "Zemin • Fayans • Şap" },
   { id: "zemin_kaplama", name: "Zemin Kaplama", emoji: "🧱", group: "Zemin • Fayans • Şap" },
 
-  // Kapı • Pencere • Cam • Pimapen
   { id: "pimapen", name: "Pimapen", emoji: "🪟", group: "Kapı • Pencere • Cam" },
   { id: "camci", name: "Camcı", emoji: "🪟", group: "Kapı • Pencere • Cam" },
   { id: "kapi_montaj", name: "Kapı Montaj", emoji: "🚪", group: "Kapı • Pencere • Cam" },
@@ -174,38 +172,32 @@ const CATEGORIES: Category[] = [
   { id: "sineklik", name: "Sineklik", emoji: "🦟", group: "Kapı • Pencere • Cam" },
   { id: "panjur", name: "Panjur", emoji: "🧱", group: "Kapı • Pencere • Cam" },
 
-  // Mobilya • Marangoz
   { id: "marangoz", name: "Marangoz", emoji: "🪚", group: "Mobilya • Marangoz" },
   { id: "mobilya_montaj", name: "Mobilya Montaj", emoji: "🧩", group: "Mobilya • Marangoz" },
   { id: "mutfak_dolap", name: "Mutfak Dolabı", emoji: "🗄️", group: "Mobilya • Marangoz" },
   { id: "banyo_dolap", name: "Banyo Dolabı", emoji: "🚿", group: "Mobilya • Marangoz" },
 
-  // Çatı • İzolasyon • Dış Cephe
   { id: "cati", name: "Çatı Ustası", emoji: "🏠", group: "Çatı • İzolasyon • Dış Cephe" },
   { id: "izolasyon", name: "Isı / Su İzolasyonu", emoji: "🧊", group: "Çatı • İzolasyon • Dış Cephe" },
   { id: "mantolama", name: "Mantolama", emoji: "🧥", group: "Çatı • İzolasyon • Dış Cephe" },
   { id: "oluk", name: "Oluk / Yağmur İnişi", emoji: "🌧️", group: "Çatı • İzolasyon • Dış Cephe" },
   { id: "dis_cephe", name: "Dış Cephe Kaplama", emoji: "🏗️", group: "Çatı • İzolasyon • Dış Cephe" },
 
-  // Demir • Kaynak
   { id: "kaynak", name: "Kaynak", emoji: "⚙️", group: "Demir • Kaynak" },
   { id: "demir_dograma", name: "Demir Doğrama", emoji: "🧲", group: "Demir • Kaynak" },
   { id: "korkuluk", name: "Korkuluk / Ferforje", emoji: "🧲", group: "Demir • Kaynak" },
   { id: "kapi_pencere_korkuluk", name: "Balkon / Merdiven Korkuluk", emoji: "🪜", group: "Demir • Kaynak" },
 
-  // İnşaat Ağır İşler
   { id: "kalip", name: "Kalıpçı", emoji: "🧱", group: "İnşaat Ağır İşler" },
   { id: "demirci", name: "İnşaat Demircisi", emoji: "🦾", group: "İnşaat Ağır İşler" },
   { id: "duvar_orucu", name: "Duvar Örme", emoji: "🧱", group: "İnşaat Ağır İşler" },
   { id: "beton", name: "Beton / Şantiye İşleri", emoji: "🏗️", group: "İnşaat Ağır İşler" },
   { id: "karot", name: "Karot / Delme", emoji: "🕳️", group: "İnşaat Ağır İşler" },
 
-  // Acil Arıza
   { id: "acil_elektrik", name: "Acil Elektrikçi (7/24)", emoji: "🚨", group: "Acil Arıza (7/24)" },
   { id: "acil_tesisat", name: "Acil Tesisatçı (7/24)", emoji: "🚨", group: "Acil Arıza (7/24)" },
   { id: "acil_kombi", name: "Acil Kombi (7/24)", emoji: "🚨", group: "Acil Arıza (7/24)" },
 
-  // İnşaat Sonrası Temizlik
   { id: "insaat_sonrasi_temizlik", name: "İnşaat Sonrası Temizlik", emoji: "🧽", group: "İnşaat Sonrası Temizlik" },
   { id: "moloz_temizleme", name: "Moloz Temizleme", emoji: "🪣", group: "İnşaat Sonrası Temizlik" },
   { id: "moloz_tasima", name: "Moloz Taşıma", emoji: "🚛", group: "İnşaat Sonrası Temizlik" },
@@ -213,17 +205,9 @@ const CATEGORIES: Category[] = [
   { id: "cam_temizlik", name: "Cam & Cephe Temizliği", emoji: "🪟", group: "İnşaat Sonrası Temizlik" },
 ];
 
-/**
- * ✅ MOCK (Sadece UI test için)
- * categoryId’leri yeni id’lerle uyumlu olacak şekilde düzeltildi.
- */
-const MOCK_PROS: Pro[] = [
-  { id: "p1", name: "Ahmet Y.", title: "Elektrik Arıza Ustası", city: "İstanbul", categoryId: "elektrik_ariza", rating: 4.9, reviews: 128, sponsored: true },
-  { id: "p2", name: "Mehmet K.", title: "Su Tesisat Ustası", city: "İstanbul", categoryId: "su_tesisat", rating: 4.7, reviews: 86, sponsored: true },
-  { id: "p3", name: "Ayşe T.", title: "Boya / Badana Ustası", city: "İstanbul", categoryId: "boya_badana", rating: 4.8, reviews: 64 },
-  { id: "p4", name: "Can B.", title: "Kombi Servisi", city: "Ankara", categoryId: "kombi_servis", rating: 4.6, reviews: 41 },
-  { id: "p5", name: "Deniz S.", title: "Moloz Temizleme", city: "İzmir", categoryId: "moloz_temizleme", rating: 4.7, reviews: 22 },
-];
+function trLower(s: string) {
+  return (s || "").toLocaleLowerCase("tr-TR");
+}
 
 export default function DiscoverPage() {
   const router = useRouter();
@@ -232,6 +216,8 @@ export default function DiscoverPage() {
   const [fbUser, setFbUser] = useState<User | null>(null);
   const [meta, setMeta] = useState<AppUserMeta | null>(null);
 
+  const [checkingAuth, setCheckingAuth] = useState(true);
+
   const [step, setStep] = useState<Step>("home");
   const [categoryQuery, setCategoryQuery] = useState("");
   const [groupFilter, setGroupFilter] = useState<string>("Tümü");
@@ -239,13 +225,22 @@ export default function DiscoverPage() {
   const [selectedCategory, setSelectedCategory] = useState<Category | null>(null);
   const [selectedCity, setSelectedCity] = useState<City | null>(null);
 
+  const [cityQuery, setCityQuery] = useState("");
+
+  const [loadingPros, setLoadingPros] = useState(false);
+  const [pros, setPros] = useState<Pro[]>([]);
+  const [prosError, setProsError] = useState<string | null>(null);
+
   const logoSrc = useMemo(() => "/logo.png", []);
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
       setFbUser(u);
+
       if (!u) {
         setMeta(null);
+        setCheckingAuth(false);
+        router.replace("/auth");
         return;
       }
 
@@ -253,16 +248,26 @@ export default function DiscoverPage() {
         const ref = doc(db, "users", u.uid);
         const snap = await getDoc(ref);
         const data = snap.exists() ? (snap.data() as any) : null;
+
         const role: AppRole = data?.role === "admin" ? "admin" : "user";
         const accountType: AccountType = data?.accountType === "pro" ? "pro" : "user";
-        setMeta({ role, accountType, displayName: data?.displayName || u.displayName || "Kullanıcı" });
+        const proId = typeof data?.proId === "string" ? data.proId : undefined;
+
+        setMeta({
+          role,
+          accountType,
+          displayName: data?.displayName || u.displayName || "Kullanıcı",
+          proId,
+        });
       } catch {
         setMeta({ role: "user", accountType: "user", displayName: u.displayName || "Kullanıcı" });
+      } finally {
+        setCheckingAuth(false);
       }
     });
 
     return () => unsub();
-  }, []);
+  }, [router]);
 
   const isAuthed = !!fbUser;
   const isAdmin = meta?.role === "admin";
@@ -272,13 +277,13 @@ export default function DiscoverPage() {
     const set = new Set<string>();
     CATEGORIES.forEach((c) => set.add(c.group));
     return ["Tümü", ...Array.from(set)];
-  }, [/* ✅ */ CATEGORIES]);
+  }, []);
 
   const groupedCategories = useMemo(() => {
-    const q = categoryQuery.trim().toLowerCase();
+    const q = trLower(categoryQuery.trim());
 
     const filtered = CATEGORIES.filter((c) => {
-      const matchesQuery = q ? c.name.toLowerCase().includes(q) : true;
+      const matchesQuery = q ? trLower(c.name).includes(q) : true;
       const matchesGroup = groupFilter === "Tümü" ? true : c.group === groupFilter;
       return matchesQuery && matchesGroup;
     });
@@ -291,24 +296,77 @@ export default function DiscoverPage() {
     return Array.from(groups.entries());
   }, [categoryQuery, groupFilter]);
 
-  const results = useMemo(() => {
-    if (!selectedCategory || !selectedCity) return [];
-    const list = MOCK_PROS.filter(
-      (p) =>
-        p.categoryId === selectedCategory.id &&
-        p.city.toLowerCase() === selectedCity.name.toLowerCase()
-    );
-    const sponsored = list.filter((x) => x.sponsored);
-    const normal = list.filter((x) => !x.sponsored);
-    return [...sponsored, ...normal];
-  }, [selectedCategory, selectedCity]);
+  const filteredCities = useMemo(() => {
+    const q = trLower(cityQuery.trim());
+    if (!q) return CITIES;
 
+    return CITIES.filter((c) => {
+      const byPlate = c.plate.includes(q);
+      const byName = trLower(c.name).includes(q);
+      return byPlate || byName;
+    });
+  }, [cityQuery]);
+
+  // ✅ FIX: 2x array-contains aynı query’de olmaz. Şehirden çeker, mesleği JS’te filtreleriz.
+  const fetchPros = async (category: Category, city: City) => {
+    setLoadingPros(true);
+    setProsError(null);
+    setPros([]);
+
+    try {
+      const qy = query(
+        collection(db, "pros"),
+        where("isVisible", "==", true),
+        where("cities", "array-contains", city.name)
+      );
+
+      const snap = await getDocs(qy);
+
+      const rawList = snap.docs.map((d) => {
+        const data = d.data() as any;
+        return {
+          id: d.id,
+          companyName: data?.companyName || "Şirket",
+          displayName: data?.displayName || "Usta",
+          city: data?.city || city.name,
+          categoryId: category.id,
+          rating: typeof data?.rating === "number" ? data.rating : 4.8,
+          reviews: typeof data?.reviews === "number" ? data.reviews : 0,
+          sponsored: !!data?.isSponsored,
+        } as Pro;
+      });
+
+      // professions array’sinde category.name var mı?
+      const filtered = snap.docs
+        .map((d, idx) => {
+          const data = d.data() as any;
+          const professions: string[] = Array.isArray(data?.professions) ? data.professions : [];
+          return professions.includes(category.name) ? rawList[idx] : null;
+        })
+        .filter(Boolean) as Pro[];
+
+      const sponsored = filtered.filter((x) => x.sponsored);
+      const normal = filtered.filter((x) => !x.sponsored);
+      setPros([...sponsored, ...normal]);
+    } catch (e: any) {
+      console.error("fetchPros error:", e);
+      setProsError(e?.message ? `Hata: ${e.message}` : "Ustaları çekerken hata oldu. Tekrar dene.");
+    } finally {
+      setLoadingPros(false);
+    }
+  };
+
+  // ✅ Eksik olan fonksiyon buydu (Baştan butonu için)
   const resetFlow = () => {
     setStep("home");
     setSelectedCategory(null);
     setSelectedCity(null);
     setCategoryQuery("");
     setGroupFilter("Tümü");
+    setCityQuery("");
+    setPros([]);
+    setProsError(null);
+    setLoadingPros(false);
   };
 
   const logout = async () => {
@@ -316,6 +374,16 @@ export default function DiscoverPage() {
     await signOut(auth);
     router.push("/auth");
   };
+
+  if (checkingAuth) {
+    return (
+      <div className="min-h-screen bg-zinc-950 text-white flex items-center justify-center">
+        <div className="text-sm text-zinc-300">Kontrol ediliyor…</div>
+      </div>
+    );
+  }
+
+  if (!isAuthed) return null;
 
   return (
     <div className="min-h-screen bg-zinc-950 text-white relative overflow-hidden">
@@ -346,14 +414,7 @@ export default function DiscoverPage() {
 
               <Link href="/discover" className="flex items-center gap-3">
                 <div className="relative h-10 w-10 rounded-2xl border border-zinc-700/60 bg-zinc-950/50 shadow overflow-hidden">
-                  <Image
-                    src={logoSrc}
-                    alt="Repairoo"
-                    width={40}
-                    height={40}
-                    className="h-full w-full object-cover"
-                    priority
-                  />
+                  <Image src={logoSrc} alt="Repairoo" width={40} height={40} className="h-full w-full object-cover" priority />
                   <div className="pointer-events-none absolute -left-10 top-0 h-full w-10 rotate-12 bg-white/20 blur-md animate-shine" />
                 </div>
 
@@ -367,21 +428,12 @@ export default function DiscoverPage() {
             </div>
 
             <div className="flex items-center gap-2">
-              {!isAuthed ? (
-                <Link
-                  href="/auth"
-                  className="inline-flex items-center justify-center rounded-2xl px-4 py-2 bg-orange-500 hover:bg-orange-400 text-black text-sm font-extrabold transition shadow-[0_18px_60px_rgba(249,115,22,0.26)]"
-                >
-                  Giriş Yap
-                </Link>
-              ) : (
-                <button
-                  onClick={logout}
-                  className="inline-flex items-center justify-center rounded-2xl px-4 py-2 border border-zinc-800/70 bg-zinc-950/40 hover:bg-zinc-900/50 text-sm font-semibold transition"
-                >
-                  Çıkış
-                </button>
-              )}
+              <button
+                onClick={logout}
+                className="inline-flex items-center justify-center rounded-2xl px-4 py-2 border border-zinc-800/70 bg-zinc-950/40 hover:bg-zinc-900/50 text-sm font-semibold transition"
+              >
+                Çıkış
+              </button>
             </div>
           </div>
         </div>
@@ -404,9 +456,7 @@ export default function DiscoverPage() {
                 {step === "results" && "Sonuçlar"}
               </h1>
 
-              <p className="mt-2 text-sm text-zinc-300">
-                Meslek seç → şehir seç → ustaları görüntüle.
-              </p>
+              <p className="mt-2 text-sm text-zinc-300">Meslek seç → şehir seç → ustaları görüntüle.</p>
             </div>
 
             <div className="flex gap-2">
@@ -427,16 +477,13 @@ export default function DiscoverPage() {
             </div>
           </div>
 
-          {/* Steps */}
+          {/* HOME */}
           {step === "home" && (
             <div className="mt-7">
-              {/* üst 2 kart */}
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                 <div className="rounded-2xl border border-zinc-800/70 bg-zinc-950/40 p-6">
                   <div className="text-sm font-semibold">1) Meslek seç</div>
-                  <div className="mt-1 text-xs text-zinc-300">
-                    Aradığın ustayı seçerek başla.
-                  </div>
+                  <div className="mt-1 text-xs text-zinc-300">Aradığın ustayı seçerek başla.</div>
                   <button
                     onClick={() => setStep("category")}
                     className="mt-4 w-full rounded-2xl px-4 py-3 bg-orange-500 hover:bg-orange-400 text-black text-sm font-extrabold transition shadow-[0_18px_60px_rgba(249,115,22,0.26)]"
@@ -444,16 +491,12 @@ export default function DiscoverPage() {
                     Meslek Seç
                   </button>
 
-                  <div className="mt-4 text-xs text-zinc-400">
-                    İpucu: Meslek ekranında arama + kategori filtresi var.
-                  </div>
+                  <div className="mt-4 text-xs text-zinc-400">İpucu: Meslek ekranında arama + kategori filtresi var.</div>
                 </div>
 
                 <div className="rounded-2xl border border-zinc-800/70 bg-zinc-950/40 p-6">
                   <div className="text-sm font-semibold">2) Şehir seç</div>
-                  <div className="mt-1 text-xs text-zinc-300">
-                    Şehrini seç, uygun ustalar listelensin.
-                  </div>
+                  <div className="mt-1 text-xs text-zinc-300">Şehrini seç, uygun ustalar listelensin.</div>
 
                   <button
                     onClick={() => {
@@ -476,14 +519,19 @@ export default function DiscoverPage() {
                 </div>
               </div>
 
-              {/* alt doldurma: nasıl kullanılır + neden repairoo + footer */}
               <div className="mt-6 grid grid-cols-1 lg:grid-cols-3 gap-4">
                 <div className="rounded-2xl border border-zinc-800/70 bg-zinc-950/35 p-6">
                   <div className="text-sm font-extrabold text-zinc-100">Nasıl Kullanılır?</div>
                   <div className="mt-4 space-y-3 text-xs text-zinc-300">
-                    <div><span className="text-orange-400 font-semibold">1.</span> Mesleği seç.</div>
-                    <div><span className="text-orange-400 font-semibold">2.</span> Şehrini belirle.</div>
-                    <div><span className="text-orange-400 font-semibold">3.</span> Ustayı incele, iletişime geç.</div>
+                    <div>
+                      <span className="text-orange-400 font-semibold">1.</span> Mesleği seç.
+                    </div>
+                    <div>
+                      <span className="text-orange-400 font-semibold">2.</span> Şehrini belirle.
+                    </div>
+                    <div>
+                      <span className="text-orange-400 font-semibold">3.</span> Ustayı incele, iletişime geç.
+                    </div>
                   </div>
                 </div>
 
@@ -517,14 +565,12 @@ export default function DiscoverPage() {
                   <div>Adres: İstanbul, Türkiye</div>
                 </div>
 
-                <div className="pt-3 text-[11px] text-zinc-500">
-                  © {new Date().getFullYear()} Repairoo. Tüm hakları saklıdır.
-                </div>
+                <div className="pt-3 text-[11px] text-zinc-500">© {new Date().getFullYear()} Repairoo. Tüm hakları saklıdır.</div>
               </div>
             </div>
           )}
 
-          {/* Meslek ekranı */}
+          {/* CATEGORY */}
           {step === "category" && (
             <div className="mt-7">
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
@@ -555,12 +601,11 @@ export default function DiscoverPage() {
               <div className="mt-4 rounded-2xl border border-zinc-800/70 bg-zinc-950/35 p-4">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="text-xs text-zinc-300">
-                    Filtre:{" "}
-                    <span className="text-zinc-100 font-semibold">{groupFilter}</span>
+                    Filtre: <span className="text-zinc-100 font-semibold">{groupFilter}</span>
                     {categoryQuery.trim() ? (
                       <>
-                        {" "}• Arama:{" "}
-                        <span className="text-zinc-100 font-semibold">"{categoryQuery.trim()}"</span>
+                        {" "}
+                        • Arama: <span className="text-zinc-100 font-semibold">"{categoryQuery.trim()}"</span>
                       </>
                     ) : null}
                   </div>
@@ -607,9 +652,7 @@ export default function DiscoverPage() {
                               </div>
                               <span className="text-xs text-zinc-400">→</span>
                             </div>
-                            <div className="mt-1 text-[11px] text-zinc-400">
-                              Şehir seçimine geç
-                            </div>
+                            <div className="mt-1 text-[11px] text-zinc-400">Şehir seçimine geç</div>
                           </button>
                         ))}
                       </div>
@@ -620,6 +663,7 @@ export default function DiscoverPage() {
             </div>
           )}
 
+          {/* CITY */}
           {step === "city" && (
             <div className="mt-7">
               <div className="rounded-2xl border border-zinc-800/70 bg-zinc-950/35 p-4">
@@ -631,51 +675,78 @@ export default function DiscoverPage() {
                 </div>
               </div>
 
+              <div className="mt-4">
+                <input
+                  value={cityQuery}
+                  onChange={(e) => setCityQuery(e.target.value)}
+                  placeholder="Şehir ara… (plaka: 34 / isim: İstanbul)"
+                  className="w-full rounded-2xl border border-zinc-800/70 bg-zinc-950/50 px-4 py-3 text-sm outline-none placeholder:text-zinc-500 focus:border-orange-500/60"
+                />
+                <div className="mt-2 text-[11px] text-zinc-400">Plaka veya şehir ismi yazabilirsin.</div>
+              </div>
+
               <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 max-h-[420px] overflow-auto pr-1">
-                {CITIES.map((city) => (
-                  <button
-                    key={city.plate}
-                    onClick={() => {
-                      setSelectedCity(city);
-                      setStep("results");
-                    }}
-                    className="text-left rounded-2xl border border-zinc-800/70 bg-zinc-950/40 hover:bg-zinc-900/55 transition px-4 py-3"
-                  >
-                    <div className="flex items-center justify-between">
-                      <div className="text-sm font-semibold">
-                        <span className="font-extrabold text-orange-300">{city.plate}</span>{" "}
-                        <span className="text-zinc-100">{city.name}</span>
+                {filteredCities.length === 0 ? (
+                  <div className="sm:col-span-2 lg:col-span-3 rounded-2xl border border-zinc-800/70 bg-zinc-950/40 p-5 text-sm text-zinc-300">
+                    Bu aramada şehir bulunamadı.
+                  </div>
+                ) : (
+                  filteredCities.map((city) => (
+                    <button
+                      key={city.plate}
+                      onClick={async () => {
+                        setSelectedCity(city);
+                        setStep("results");
+                        if (selectedCategory) await fetchPros(selectedCategory, city);
+                      }}
+                      className="text-left rounded-2xl border border-zinc-800/70 bg-zinc-950/40 hover:bg-zinc-900/55 transition px-4 py-3"
+                    >
+                      <div className="flex items-center justify-between">
+                        <div className="text-sm font-semibold">
+                          <span className="font-extrabold text-orange-300">{city.plate}</span>{" "}
+                          <span className="text-zinc-100">{city.name}</span>
+                        </div>
+                        <span className="text-xs text-zinc-400">→</span>
                       </div>
-                      <span className="text-xs text-zinc-400">→</span>
-                    </div>
-                  </button>
-                ))}
+                    </button>
+                  ))
+                )}
               </div>
             </div>
           )}
 
+          {/* RESULTS */}
           {step === "results" && (
             <div className="mt-7">
               <div className="rounded-2xl border border-zinc-800/70 bg-zinc-950/35 p-4">
                 <div className="text-sm font-semibold">
                   {selectedCategory?.emoji} {selectedCategory?.name} •{" "}
-                  <span className="text-orange-300 font-extrabold">
-                    {selectedCity?.plate}
-                  </span>{" "}
-                  {selectedCity?.name}
+                  <span className="text-orange-300 font-extrabold">{selectedCity?.plate}</span> {selectedCity?.name}
                 </div>
-                <div className="mt-1 text-xs text-zinc-300">
-                  Sponsorlu ustalar üstte gösterilir.
-                </div>
+                <div className="mt-1 text-xs text-zinc-300">Sponsorlu ustalar üstte gösterilir.</div>
               </div>
 
+              {prosError && (
+                <div className="mt-4 rounded-2xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-200">
+                  {prosError}
+                </div>
+              )}
+
               <div className="mt-4 grid gap-3">
-                {results.length === 0 ? (
+                {loadingPros ? (
                   <div className="rounded-2xl border border-zinc-800/70 bg-zinc-950/40 p-5 text-sm text-zinc-300">
-                    Bu kriterlerde usta bulunamadı. Farklı şehir/meslek deneyebilirsin.
+                    Ustalar yükleniyor…
+                  </div>
+                ) : pros.length === 0 ? (
+                  <div className="rounded-2xl border border-zinc-800/70 bg-zinc-950/40 p-5 text-sm text-zinc-300">
+                    Bu kriterlerde usta bulunamadı. İlk ustayı eklemek için{" "}
+                    <Link href="/pro/create" className="text-orange-300 font-extrabold underline">
+                      Sanal Şirket Oluştur
+                    </Link>{" "}
+                    bölümüne git.
                   </div>
                 ) : (
-                  results.map((p) => (
+                  pros.map((p) => (
                     <Link
                       key={p.id}
                       href={`/pro/${p.id}`}
@@ -684,16 +755,18 @@ export default function DiscoverPage() {
                       <div className="flex items-center justify-between gap-3">
                         <div>
                           <div className="flex items-center gap-2">
-                            <div className="text-sm font-extrabold">{p.name}</div>
+                            <div className="text-sm font-extrabold text-zinc-100">{p.companyName}</div>
                             {p.sponsored && (
                               <span className="text-[11px] rounded-full border border-orange-300/20 bg-orange-500/15 px-2 py-0.5 text-orange-200">
                                 Sponsorlu
                               </span>
                             )}
                           </div>
+
                           <div className="mt-1 text-xs text-zinc-300">
-                            {p.title} • {p.city}
+                            {p.displayName} • {p.city}
                           </div>
+
                           <div className="mt-2 text-xs text-zinc-400">
                             ⭐ {p.rating.toFixed(1)} • {p.reviews} değerlendirme
                           </div>
@@ -718,13 +791,21 @@ export default function DiscoverPage() {
                 >
                   Meslek Değiştir
                 </button>
+                <button
+                  onClick={async () => {
+                    if (selectedCategory && selectedCity) await fetchPros(selectedCategory, selectedCity);
+                  }}
+                  className="rounded-2xl px-4 py-2 border border-zinc-800/70 bg-zinc-950/40 hover:bg-zinc-900/50 text-sm font-semibold transition"
+                >
+                  Yenile
+                </button>
               </div>
             </div>
           )}
         </div>
       </main>
 
-      {/* Live support button */}
+      {/* Live support */}
       <Link href="/support" className="fixed bottom-5 right-5 z-40 group" aria-label="Canlı Destek">
         <div className="relative">
           <div className="absolute inset-0 rounded-2xl blur-xl opacity-35 bg-orange-500 group-hover:opacity-55 transition" />
@@ -772,33 +853,64 @@ export default function DiscoverPage() {
               <DrawerItem href="/profile" title="Kullanıcı Profili" desc="Profilini görüntüle" onClick={() => setDrawerOpen(false)} />
               <DrawerItem href="/messages" title="Mesajlar" desc="Ustalardan gelen mesajlara ulaş" onClick={() => setDrawerOpen(false)} />
               <DrawerItem href="/vip" title="VIP Planları" desc="Herkese açık" onClick={() => setDrawerOpen(false)} />
-              {isPro && <DrawerItem href="/highlight" title="Öne Çıkartma" desc="Sadece ustalar" badge="Usta" onClick={() => setDrawerOpen(false)} />}
-              {isAdmin && <DrawerItem href="/admin" title="Admin" desc="Sadece admin hesaplar" badge="Admin" onClick={() => setDrawerOpen(false)} />}
+
+              <DrawerItem
+                href="/pro/create"
+                title="Sanal Şirket Oluştur"
+                desc="Şirket adı gir, meslek/şehir seç, profili yayınla"
+                onClick={() => setDrawerOpen(false)}
+              />
+
+              {isPro && meta?.proId && (
+                <DrawerItem
+                  href={`/pro/${meta.proId}`}
+                  title="Usta Profilim"
+                  desc="Profilini görüntüle"
+                  onClick={() => setDrawerOpen(false)}
+                />
+              )}
+
+              {isPro && (
+                <DrawerItem
+                  href="/highlight"
+                  title="Öne Çıkartma"
+                  desc="Sadece ustalar"
+                  badge="Usta"
+                  onClick={() => setDrawerOpen(false)}
+                />
+              )}
+
+              {isAdmin && (
+                <DrawerItem
+                  href="/admin"
+                  title="Admin"
+                  desc="Sadece admin hesaplar"
+                  badge="Admin"
+                  onClick={() => setDrawerOpen(false)}
+                />
+              )}
+
               <DrawerItem href="/settings" title="Ayarlar" desc="Profil ayarları + görünüm" onClick={() => setDrawerOpen(false)} />
               <DrawerItem href="/support" title="Canlı Destek" desc="Hızlı yardım" onClick={() => setDrawerOpen(false)} />
 
               <div className="h-px bg-zinc-800/70 my-2" />
 
-              {!isAuthed ? (
-                <DrawerItem href="/auth" title="Giriş Yap" desc="Google ile giriş" badge="Giriş" onClick={() => setDrawerOpen(false)} />
-              ) : (
-                <button
-                  onClick={async () => {
-                    setDrawerOpen(false);
-                    await signOut(auth);
-                    router.push("/auth");
-                  }}
-                  className="text-left w-full rounded-2xl border border-zinc-800/70 bg-zinc-950/40 hover:bg-zinc-900/50 transition px-4 py-3"
-                >
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <div className="text-sm font-semibold">Çıkış Yap</div>
-                      <div className="mt-0.5 text-xs text-zinc-300">Hesabından çık</div>
-                    </div>
-                    <span className="text-xs text-zinc-400">→</span>
+              <button
+                onClick={async () => {
+                  setDrawerOpen(false);
+                  await signOut(auth);
+                  router.push("/auth");
+                }}
+                className="text-left w-full rounded-2xl border border-zinc-800/70 bg-zinc-950/40 hover:bg-zinc-900/50 transition px-4 py-3"
+              >
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="text-sm font-semibold">Çıkış Yap</div>
+                    <div className="mt-0.5 text-xs text-zinc-300">Hesabından çık</div>
                   </div>
-                </button>
-              )}
+                  <span className="text-xs text-zinc-400">→</span>
+                </div>
+              </button>
             </nav>
           </aside>
         </div>
@@ -825,16 +937,32 @@ export default function DiscoverPage() {
           text-shadow: 0 0 24px rgba(255, 255, 255, 0.06);
         }
         @keyframes silverFlow {
-          0% { background-position: 0% 50%; }
-          100% { background-position: 240% 50%; }
+          0% {
+            background-position: 0% 50%;
+          }
+          100% {
+            background-position: 240% 50%;
+          }
         }
         @keyframes shineMove {
-          0% { transform: translateX(-90px) rotate(12deg); opacity: 0; }
-          12% { opacity: 0.35; }
-          45% { opacity: 0.12; }
-          100% { transform: translateX(160px) rotate(12deg); opacity: 0; }
+          0% {
+            transform: translateX(-90px) rotate(12deg);
+            opacity: 0;
+          }
+          12% {
+            opacity: 0.35;
+          }
+          45% {
+            opacity: 0.12;
+          }
+          100% {
+            transform: translateX(160px) rotate(12deg);
+            opacity: 0;
+          }
         }
-        .animate-shine { animation: shineMove 2.8s ease-in-out infinite; }
+        .animate-shine {
+          animation: shineMove 2.8s ease-in-out infinite;
+        }
       `}</style>
     </div>
   );
