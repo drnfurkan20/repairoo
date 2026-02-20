@@ -5,7 +5,16 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { onAuthStateChanged, signOut, User } from "firebase/auth";
-import { collection, doc, getDoc, getDocs, query, where } from "firebase/firestore";
+import {
+  collection,
+  doc,
+  getDoc,
+  getDocs,
+  query,
+  where,
+  limit,
+  setDoc,
+} from "firebase/firestore";
 import { auth, db } from "@/lib/firebase";
 
 type Step = "home" | "category" | "city" | "results";
@@ -215,7 +224,6 @@ export default function DiscoverPage() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [fbUser, setFbUser] = useState<User | null>(null);
   const [meta, setMeta] = useState<AppUserMeta | null>(null);
-
   const [checkingAuth, setCheckingAuth] = useState(true);
 
   const [step, setStep] = useState<Step>("home");
@@ -231,7 +239,22 @@ export default function DiscoverPage() {
   const [pros, setPros] = useState<Pro[]>([]);
   const [prosError, setProsError] = useState<string | null>(null);
 
+  // ✅ Discover kendi kendine pro'yu bulsun diye:
+  const [myProId, setMyProId] = useState<string | null>(null);
   const logoSrc = useMemo(() => "/logo.png", []);
+
+  // ✅ pro bulucu: ownerUid == uid
+  const resolveMyPro = async (uid: string) => {
+    try {
+      const qy = query(collection(db, "pros"), where("ownerUid", "==", uid), limit(1));
+      const snap = await getDocs(qy);
+      if (snap.empty) return null;
+      return snap.docs[0].id;
+    } catch (e) {
+      console.error("resolveMyPro error:", e);
+      return null;
+    }
+  };
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
@@ -239,28 +262,57 @@ export default function DiscoverPage() {
 
       if (!u) {
         setMeta(null);
+        setMyProId(null);
         setCheckingAuth(false);
         router.replace("/auth");
         return;
       }
 
       try {
+        // 1) users meta oku
         const ref = doc(db, "users", u.uid);
         const snap = await getDoc(ref);
         const data = snap.exists() ? (snap.data() as any) : null;
 
         const role: AppRole = data?.role === "admin" ? "admin" : "user";
         const accountType: AccountType = data?.accountType === "pro" ? "pro" : "user";
-        const proId = typeof data?.proId === "string" ? data.proId : undefined;
+        const proIdFromUser = typeof data?.proId === "string" ? data.proId : undefined;
+
+        // 2) Eğer proId yoksa ya da accountType pro değilse -> pros'tan ownerUid ile bul
+        const proIdAuto = proIdFromUser || (await resolveMyPro(u.uid));
+
+        // 3) State'leri bas
+        setMyProId(proIdAuto || null);
+
+        const finalAccountType: AccountType = proIdAuto ? "pro" : accountType;
 
         setMeta({
           role,
-          accountType,
+          accountType: finalAccountType,
           displayName: data?.displayName || u.displayName || "Kullanıcı",
-          proId,
+          proId: proIdAuto || undefined,
         });
-      } catch {
-        setMeta({ role: "user", accountType: "user", displayName: u.displayName || "Kullanıcı" });
+
+        // 4) İstersen kalıcı yazalım (merge) -> bir kere düzelsin, sonra hep gelsin
+        //    (pro bulunduysa ve users'ta yoksa)
+        if (proIdAuto && (!data?.proId || data?.accountType !== "pro")) {
+          await setDoc(
+            doc(db, "users", u.uid),
+            { accountType: "pro", proId: proIdAuto },
+            { merge: true }
+          );
+        }
+      } catch (e) {
+        console.error("meta load error:", e);
+        // en azından pro'yu yine dene
+        const auto = await resolveMyPro(u.uid);
+        setMyProId(auto || null);
+        setMeta({
+          role: "user",
+          accountType: auto ? "pro" : "user",
+          displayName: u.displayName || "Kullanıcı",
+          proId: auto || undefined,
+        });
       } finally {
         setCheckingAuth(false);
       }
@@ -272,6 +324,7 @@ export default function DiscoverPage() {
   const isAuthed = !!fbUser;
   const isAdmin = meta?.role === "admin";
   const isPro = meta?.accountType === "pro";
+  const hasProProfile = !!(myProId || meta?.proId);
 
   const allGroups = useMemo(() => {
     const set = new Set<string>();
@@ -307,7 +360,8 @@ export default function DiscoverPage() {
     });
   }, [cityQuery]);
 
-  // ✅ FIX: 2x array-contains aynı query’de olmaz. Şehirden çeker, mesleği JS’te filtreleriz.
+  // ✅ Firestore limit: tek query’de 2x array-contains olmaz.
+  // Şehirden çekeriz, mesleği JS’te filtreleriz.
   const fetchPros = async (category: Category, city: City) => {
     setLoadingPros(true);
     setProsError(null);
@@ -322,7 +376,7 @@ export default function DiscoverPage() {
 
       const snap = await getDocs(qy);
 
-      const rawList = snap.docs.map((d) => {
+      const rawList: Pro[] = snap.docs.map((d) => {
         const data = d.data() as any;
         return {
           id: d.id,
@@ -333,15 +387,15 @@ export default function DiscoverPage() {
           rating: typeof data?.rating === "number" ? data.rating : 4.8,
           reviews: typeof data?.reviews === "number" ? data.reviews : 0,
           sponsored: !!data?.isSponsored,
-        } as Pro;
+        };
       });
 
-      // professions array’sinde category.name var mı?
       const filtered = snap.docs
         .map((d, idx) => {
           const data = d.data() as any;
           const professions: string[] = Array.isArray(data?.professions) ? data.professions : [];
-          return professions.includes(category.name) ? rawList[idx] : null;
+          const ok = professions.includes(category.name);
+          return ok ? rawList[idx] : null;
         })
         .filter(Boolean) as Pro[];
 
@@ -356,7 +410,6 @@ export default function DiscoverPage() {
     }
   };
 
-  // ✅ Eksik olan fonksiyon buydu (Baştan butonu için)
   const resetFlow = () => {
     setStep("home");
     setSelectedCategory(null);
@@ -384,6 +437,8 @@ export default function DiscoverPage() {
   }
 
   if (!isAuthed) return null;
+
+  const effectiveProId = (meta?.proId || myProId) ?? undefined;
 
   return (
     <div className="min-h-screen bg-zinc-950 text-white relative overflow-hidden">
@@ -854,18 +909,19 @@ export default function DiscoverPage() {
               <DrawerItem href="/messages" title="Mesajlar" desc="Ustalardan gelen mesajlara ulaş" onClick={() => setDrawerOpen(false)} />
               <DrawerItem href="/vip" title="VIP Planları" desc="Herkese açık" onClick={() => setDrawerOpen(false)} />
 
-              <DrawerItem
-                href="/pro/create"
-                title="Sanal Şirket Oluştur"
-                desc="Şirket adı gir, meslek/şehir seç, profili yayınla"
-                onClick={() => setDrawerOpen(false)}
-              />
-
-              {isPro && meta?.proId && (
+              {/* ✅ Eğer pro profili VARSA: Sanal Şirket Oluştur gizle, Şirket Profilim göster */}
+              {hasProProfile && effectiveProId ? (
                 <DrawerItem
-                  href={`/pro/${meta.proId}`}
-                  title="Usta Profilim"
-                  desc="Profilini görüntüle"
+                  href={`/pro/${effectiveProId}`}
+                  title="Şirket Profilim"
+                  desc="Şirket/usta profilini görüntüle"
+                  onClick={() => setDrawerOpen(false)}
+                />
+              ) : (
+                <DrawerItem
+                  href="/pro/create"
+                  title="Sanal Şirket Oluştur"
+                  desc="Şirket adı gir, meslek/şehir seç, profili yayınla"
                   onClick={() => setDrawerOpen(false)}
                 />
               )}
