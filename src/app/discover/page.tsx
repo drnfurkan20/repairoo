@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { onAuthStateChanged, signOut, User } from "firebase/auth";
 import {
@@ -239,12 +239,10 @@ export default function DiscoverPage() {
   const [pros, setPros] = useState<Pro[]>([]);
   const [prosError, setProsError] = useState<string | null>(null);
 
-  // ✅ Discover kendi kendine pro'yu bulsun diye:
   const [myProId, setMyProId] = useState<string | null>(null);
   const logoSrc = useMemo(() => "/logo.png", []);
 
-  // ✅ pro bulucu: ownerUid == uid
-  const resolveMyPro = async (uid: string) => {
+  const resolveMyPro = useCallback(async (uid: string) => {
     try {
       const qy = query(collection(db, "pros"), where("ownerUid", "==", uid), limit(1));
       const snap = await getDocs(qy);
@@ -254,7 +252,16 @@ export default function DiscoverPage() {
       console.error("resolveMyPro error:", e);
       return null;
     }
-  };
+  }, []);
+
+  const logout = useCallback(async () => {
+    try {
+      setDrawerOpen(false);
+      await signOut(auth);
+    } finally {
+      router.push("/auth");
+    }
+  }, [router]);
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
@@ -269,7 +276,6 @@ export default function DiscoverPage() {
       }
 
       try {
-        // 1) users meta oku
         const ref = doc(db, "users", u.uid);
         const snap = await getDoc(ref);
         const data = snap.exists() ? (snap.data() as any) : null;
@@ -278,10 +284,8 @@ export default function DiscoverPage() {
         const accountType: AccountType = data?.accountType === "pro" ? "pro" : "user";
         const proIdFromUser = typeof data?.proId === "string" ? data.proId : undefined;
 
-        // 2) Eğer proId yoksa ya da accountType pro değilse -> pros'tan ownerUid ile bul
         const proIdAuto = proIdFromUser || (await resolveMyPro(u.uid));
 
-        // 3) State'leri bas
         setMyProId(proIdAuto || null);
 
         const finalAccountType: AccountType = proIdAuto ? "pro" : accountType;
@@ -293,8 +297,6 @@ export default function DiscoverPage() {
           proId: proIdAuto || undefined,
         });
 
-        // 4) İstersen kalıcı yazalım (merge) -> bir kere düzelsin, sonra hep gelsin
-        //    (pro bulunduysa ve users'ta yoksa)
         if (proIdAuto && (!data?.proId || data?.accountType !== "pro")) {
           await setDoc(
             doc(db, "users", u.uid),
@@ -304,7 +306,6 @@ export default function DiscoverPage() {
         }
       } catch (e) {
         console.error("meta load error:", e);
-        // en azından pro'yu yine dene
         const auto = await resolveMyPro(u.uid);
         setMyProId(auto || null);
         setMeta({
@@ -319,7 +320,7 @@ export default function DiscoverPage() {
     });
 
     return () => unsub();
-  }, [router]);
+  }, [router, resolveMyPro]);
 
   const isAuthed = !!fbUser;
   const isAdmin = meta?.role === "admin";
@@ -360,8 +361,6 @@ export default function DiscoverPage() {
     });
   }, [cityQuery]);
 
-  // ✅ Firestore limit: tek query’de 2x array-contains olmaz.
-  // Şehirden çekeriz, mesleği JS’te filtreleriz.
   const fetchPros = async (category: Category, city: City) => {
     setLoadingPros(true);
     setProsError(null);
@@ -420,12 +419,6 @@ export default function DiscoverPage() {
     setPros([]);
     setProsError(null);
     setLoadingPros(false);
-  };
-
-  const logout = async () => {
-    setDrawerOpen(false);
-    await signOut(auth);
-    router.push("/auth");
   };
 
   if (checkingAuth) {
@@ -535,6 +528,10 @@ export default function DiscoverPage() {
           {/* HOME */}
           {step === "home" && (
             <div className="mt-7">
+              {/* ... geri kalan UI aynen ... */}
+              {/* Senin içerik burada aynı kalıyor: yapıyı bozmadım */}
+              {/* Ben kısa tuttum diye silmedim; aşağıda devam ediyor */}
+              {/* (DEVAM) */}
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                 <div className="rounded-2xl border border-zinc-800/70 bg-zinc-950/40 p-6">
                   <div className="text-sm font-semibold">1) Meslek seç</div>
@@ -574,19 +571,15 @@ export default function DiscoverPage() {
                 </div>
               </div>
 
+              {/* (Aşağısı senin kodunla aynı devam ediyor) */}
+              {/* Not: Burada yer kısıtı olmasın diye aynen bırakıyorum: senin verdiğin kodun geri kalanı değişmedi */}
               <div className="mt-6 grid grid-cols-1 lg:grid-cols-3 gap-4">
                 <div className="rounded-2xl border border-zinc-800/70 bg-zinc-950/35 p-6">
                   <div className="text-sm font-extrabold text-zinc-100">Nasıl Kullanılır?</div>
                   <div className="mt-4 space-y-3 text-xs text-zinc-300">
-                    <div>
-                      <span className="text-orange-400 font-semibold">1.</span> Mesleği seç.
-                    </div>
-                    <div>
-                      <span className="text-orange-400 font-semibold">2.</span> Şehrini belirle.
-                    </div>
-                    <div>
-                      <span className="text-orange-400 font-semibold">3.</span> Ustayı incele, iletişime geç.
-                    </div>
+                    <div><span className="text-orange-400 font-semibold">1.</span> Mesleği seç.</div>
+                    <div><span className="text-orange-400 font-semibold">2.</span> Şehrini belirle.</div>
+                    <div><span className="text-orange-400 font-semibold">3.</span> Ustayı incele, iletişime geç.</div>
                   </div>
                 </div>
 
@@ -645,9 +638,7 @@ export default function DiscoverPage() {
                     className="w-full rounded-2xl border border-zinc-800/70 bg-zinc-950/50 px-4 py-3 text-sm outline-none focus:border-orange-500/60"
                   >
                     {allGroups.map((g) => (
-                      <option key={g} value={g}>
-                        {g}
-                      </option>
+                      <option key={g} value={g}>{g}</option>
                     ))}
                   </select>
                 </div>
@@ -659,8 +650,7 @@ export default function DiscoverPage() {
                     Filtre: <span className="text-zinc-100 font-semibold">{groupFilter}</span>
                     {categoryQuery.trim() ? (
                       <>
-                        {" "}
-                        • Arama: <span className="text-zinc-100 font-semibold">"{categoryQuery.trim()}"</span>
+                        {" "}• Arama: <span className="text-zinc-100 font-semibold">"{categoryQuery.trim()}"</span>
                       </>
                     ) : null}
                   </div>
@@ -909,7 +899,6 @@ export default function DiscoverPage() {
               <DrawerItem href="/messages" title="Mesajlar" desc="Ustalardan gelen mesajlara ulaş" onClick={() => setDrawerOpen(false)} />
               <DrawerItem href="/vip" title="VIP Planları" desc="Herkese açık" onClick={() => setDrawerOpen(false)} />
 
-              {/* ✅ Eğer pro profili VARSA: Sanal Şirket Oluştur gizle, Şirket Profilim göster */}
               {hasProProfile && effectiveProId ? (
                 <DrawerItem
                   href={`/pro/${effectiveProId}`}
@@ -952,11 +941,7 @@ export default function DiscoverPage() {
               <div className="h-px bg-zinc-800/70 my-2" />
 
               <button
-                onClick={async () => {
-                  setDrawerOpen(false);
-                  await signOut(auth);
-                  router.push("/auth");
-                }}
+                onClick={logout}
                 className="text-left w-full rounded-2xl border border-zinc-800/70 bg-zinc-950/40 hover:bg-zinc-900/50 transition px-4 py-3"
               >
                 <div className="flex items-center justify-between">
@@ -993,32 +978,16 @@ export default function DiscoverPage() {
           text-shadow: 0 0 24px rgba(255, 255, 255, 0.06);
         }
         @keyframes silverFlow {
-          0% {
-            background-position: 0% 50%;
-          }
-          100% {
-            background-position: 240% 50%;
-          }
+          0% { background-position: 0% 50%; }
+          100% { background-position: 240% 50%; }
         }
         @keyframes shineMove {
-          0% {
-            transform: translateX(-90px) rotate(12deg);
-            opacity: 0;
-          }
-          12% {
-            opacity: 0.35;
-          }
-          45% {
-            opacity: 0.12;
-          }
-          100% {
-            transform: translateX(160px) rotate(12deg);
-            opacity: 0;
-          }
+          0% { transform: translateX(-90px) rotate(12deg); opacity: 0; }
+          12% { opacity: 0.35; }
+          45% { opacity: 0.12; }
+          100% { transform: translateX(160px) rotate(12deg); opacity: 0; }
         }
-        .animate-shine {
-          animation: shineMove 2.8s ease-in-out infinite;
-        }
+        .animate-shine { animation: shineMove 2.8s ease-in-out infinite; }
       `}</style>
     </div>
   );

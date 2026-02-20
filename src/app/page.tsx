@@ -1,5 +1,6 @@
 "use client";
 
+console.log("ENV TEST:", process.env.NEXT_PUBLIC_FIREBASE_API_KEY);
 import Image from "next/image";
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
