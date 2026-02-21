@@ -14,10 +14,14 @@ import {
   query,
   setDoc,
   where,
+  serverTimestamp,
 } from "firebase/firestore";
 import { auth, db } from "@/lib/firebase";
 
-type AppRole = "admin" | "user";
+/** ✅ Founder mail bypass (KALICI) */
+const FOUNDER_EMAILS = ["drnfurkan20@gmail.com"].map((x) => x.toLowerCase());
+
+type AppRole = "founder" | "headmod" | "admin" | "moderator" | "user";
 type AccountType = "pro" | "user";
 
 type AppUserMeta = {
@@ -25,8 +29,23 @@ type AppUserMeta = {
   accountType: AccountType;
   displayName?: string;
   photoURL?: string;
-  proId?: string; // ✅ ekledik
+  proId?: string;
+  supportAgent?: boolean; // ✅ canlı destek ekibi
 };
+
+function normalizeRole(v: any): AppRole {
+  const raw = typeof v === "string" ? v.trim().toLowerCase() : "user";
+  if (raw === "founder") return "founder";
+  if (raw === "headmod") return "headmod";
+  if (raw === "admin") return "admin";
+  if (raw === "moderator") return "moderator";
+  return "user";
+}
+
+function normalizeAccountType(v: any): AccountType {
+  const raw = typeof v === "string" ? v.trim().toLowerCase() : "user";
+  return raw === "pro" ? "pro" : "user";
+}
 
 export default function HomePage() {
   const router = useRouter();
@@ -44,11 +63,7 @@ export default function HomePage() {
   // ✅ proId yoksa pros içinden ownerUid ile bul
   const resolveMyPro = useCallback(async (uid: string) => {
     try {
-      const qy = query(
-        collection(db, "pros"),
-        where("ownerUid", "==", uid),
-        limit(1)
-      );
+      const qy = query(collection(db, "pros"), where("ownerUid", "==", uid), limit(1));
       const snap = await getDocs(qy);
       if (snap.empty) return null;
       return snap.docs[0].id;
@@ -72,26 +87,48 @@ export default function HomePage() {
       }
 
       try {
-        // users/{uid}
-        const ref = doc(db, "users", u.uid);
-        const snap = await getDoc(ref);
+        const userRef = doc(db, "users", u.uid);
+        const snap = await getDoc(userRef);
 
-        const data = snap.exists() ? (snap.data() as any) : null;
+        // ✅ users doc yoksa oluştur (her ortamda stabil)
+        if (!snap.exists()) {
+          await setDoc(
+            userRef,
+            {
+              role: "user",
+              accountType: "user",
+              displayName: u.displayName || "Kullanıcı",
+              email: u.email || null,
+              supportAgent: false,
+              createdAt: serverTimestamp(),
+              updatedAt: serverTimestamp(),
+            },
+            { merge: true }
+          );
+        }
 
-        const role: AppRole = data?.role === "admin" ? "admin" : "user";
-        const accountTypeRaw: AccountType =
-          data?.accountType === "pro" ? "pro" : "user";
+        const snap2 = snap.exists() ? snap : await getDoc(userRef);
+        const data = snap2.exists() ? (snap2.data() as any) : {};
+
+        // ✅ Founder bypass (mail)
+        const email = (u.email || "").toLowerCase();
+        const isFounderByEmail = !!email && FOUNDER_EMAILS.includes(email);
+
+        const roleFromDb = normalizeRole(data?.role);
+        const role: AppRole = isFounderByEmail ? "founder" : roleFromDb;
+
+        const accountTypeRaw = normalizeAccountType(data?.accountType);
 
         const proIdFromUser =
-          typeof data?.proId === "string" && data.proId.trim().length > 0
-            ? data.proId.trim()
-            : undefined;
+          typeof data?.proId === "string" && data.proId.trim().length > 0 ? data.proId.trim() : undefined;
 
         // ✅ users’da yoksa pros’dan bul
         const proIdAuto = proIdFromUser || (await resolveMyPro(u.uid));
 
-        // ✅ proId varsa accountType’ı pro yap (gerçek durum)
+        // ✅ proId varsa accountType’ı pro yap
         const finalAccountType: AccountType = proIdAuto ? "pro" : accountTypeRaw;
+
+        const supportAgent = data?.supportAgent === true;
 
         setMeta({
           role,
@@ -99,19 +136,20 @@ export default function HomePage() {
           displayName: data?.displayName || u.displayName || "Kullanıcı",
           photoURL: data?.photoURL || u.photoURL || undefined,
           proId: proIdAuto || undefined,
+          supportAgent,
         });
 
-        // ✅ bulunduysa users doc’u güncelle ki bir daha aramasın
+        // ✅ bulunduysa users doc’u güncelle
         if (proIdAuto && (!proIdFromUser || accountTypeRaw !== "pro")) {
-          await setDoc(
-            doc(db, "users", u.uid),
-            { accountType: "pro", proId: proIdAuto },
-            { merge: true }
-          );
+          await setDoc(doc(db, "users", u.uid), { accountType: "pro", proId: proIdAuto }, { merge: true });
+        }
+
+        // ✅ founder email bypass varsa role’u db’ye de yaz (istersen kalsın)
+        if (isFounderByEmail && roleFromDb !== "founder") {
+          await setDoc(doc(db, "users", u.uid), { role: "founder" }, { merge: true });
         }
       } catch (e) {
         console.error("meta load error:", e);
-        // hata olsa bile user olarak devam
         setMeta({
           role: "user",
           accountType: "user",
@@ -128,7 +166,15 @@ export default function HomePage() {
   }, [router, resolveMyPro]);
 
   const isAuthed = !!fbUser;
-  const isAdmin = meta?.role === "admin";
+
+  // ✅ Admin Panel yetkisi: founder/headmod/admin/moderator + supportAgent
+  const canSeeAdminPanel =
+    meta?.role === "founder" ||
+    meta?.role === "headmod" ||
+    meta?.role === "admin" ||
+    meta?.role === "moderator" ||
+    meta?.supportAgent === true;
+
   const isPro = meta?.accountType === "pro";
 
   // ✅ Şirket profilim linki buradan beslenecek
@@ -184,14 +230,7 @@ export default function HomePage() {
               {/* Logo + Brand */}
               <Link href="/" className="flex items-center gap-3">
                 <div className="relative h-10 w-10 rounded-2xl border border-zinc-700/60 bg-zinc-950/50 shadow overflow-hidden">
-                  <Image
-                    src={logoSrc}
-                    alt="Repairoo"
-                    width={40}
-                    height={40}
-                    className="h-full w-full object-cover"
-                    priority
-                  />
+                  <Image src={logoSrc} alt="Repairoo" width={40} height={40} className="h-full w-full object-cover" priority />
                   <div className="pointer-events-none absolute -left-10 top-0 h-full w-10 rotate-12 bg-white/20 blur-md animate-shine" />
                 </div>
 
@@ -199,9 +238,7 @@ export default function HomePage() {
                   <div className="text-lg sm:text-xl font-extrabold tracking-tight">
                     <span className="silver-flow">Repairoo</span>
                   </div>
-                  <div className="text-[11px] sm:text-xs text-zinc-300">
-                    Usta bulmanın premium yolu
-                  </div>
+                  <div className="text-[11px] sm:text-xs text-zinc-300">Usta bulmanın premium yolu</div>
                 </div>
               </Link>
             </div>
@@ -235,13 +272,11 @@ export default function HomePage() {
             </div>
 
             <h1 className="mt-4 text-3xl sm:text-4xl font-extrabold tracking-tight">
-              İhtiyacın olan ustayı{" "}
-              <span className="text-orange-400">hızla</span> bul.
+              İhtiyacın olan ustayı <span className="text-orange-400">hızla</span> bul.
             </h1>
 
             <p className="mt-3 text-sm sm:text-base text-zinc-300">
-              Mesleği seç, şehri seç, sonuçları gör. Repairoo; hızlı, net ve şık
-              bir deneyim sunar.
+              Mesleği seç, şehri seç, sonuçları gör. Repairoo; hızlı, net ve şık bir deneyim sunar.
             </p>
 
             <div className="mt-6 flex flex-col sm:flex-row gap-3">
@@ -261,18 +296,9 @@ export default function HomePage() {
             </div>
 
             <div className="mt-8 grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <FeatureCard
-                title="Premium Arayüz"
-                desc="Koyu tema + turuncu vurgu. Gözü yormaz, şık durur."
-              />
-              <FeatureCard
-                title="Hızlı Akış"
-                desc="Seç → filtrele → bul. Gereksiz adım yok."
-              />
-              <FeatureCard
-                title="Kolay İletişim"
-                desc="Ustaya ulaş, konuş, anlaş; hızlı çözüm."
-              />
+              <FeatureCard title="Premium Arayüz" desc="Koyu tema + turuncu vurgu. Gözü yormaz, şık durur." />
+              <FeatureCard title="Hızlı Akış" desc="Seç → filtrele → bul. Gereksiz adım yok." />
+              <FeatureCard title="Kolay İletişim" desc="Ustaya ulaş, konuş, anlaş; hızlı çözüm." />
               <FeatureCard title="Güvenli Giriş" desc="Google ile tek dokunuş." />
             </div>
           </div>
@@ -282,94 +308,41 @@ export default function HomePage() {
             <div className="flex items-center justify-between">
               <div>
                 <div className="text-lg sm:text-xl font-bold">Hızlı Menü</div>
-                <div className="mt-1 text-sm text-zinc-300">
-                  En sık kullanılan bölümlere hızlı geçiş.
-                </div>
+                <div className="mt-1 text-sm text-zinc-300">En sık kullanılan bölümlere hızlı geçiş.</div>
               </div>
-              <div className="text-xs text-zinc-400">
-                {loadingMeta ? "Kontrol ediliyor…" : "Aktif"}
-              </div>
+              <div className="text-xs text-zinc-400">{loadingMeta ? "Kontrol ediliyor…" : "Aktif"}</div>
             </div>
 
             <div className="mt-6 grid grid-cols-1 gap-3">
-              <QuickLink
-                href="/discover"
-                title="Usta Bul"
-                subtitle="Meslek & şehir seçerek ara"
-                badge="Önerilen"
-              />
+              <QuickLink href="/discover" title="Usta Bul" subtitle="Meslek & şehir seçerek ara" badge="Önerilen" />
 
-              {/* ✅ Şirket Profilim / Sanal Şirket Oluştur */}
               {hasProProfile ? (
-                <QuickLink
-                  href={`/pro/${effectiveProId}`}
-                  title="Şirket Profilim"
-                  subtitle="Şirket/usta profilini görüntüle"
-                  // ✅ badge kaldırıldı (premium dursun)
-                />
+                <QuickLink href={`/pro/${effectiveProId}`} title="Şirket Profilim" subtitle="Şirket/usta profilini görüntüle" />
               ) : (
-                <QuickLink
-                  href="/pro/create"
-                  title="Sanal Şirket Oluştur"
-                  subtitle="Şirket adı gir, meslek/şehir seç, profili yayınla"
-                  // ✅ badge kaldırıldı (premium dursun)
-                />
+                <QuickLink href="/pro/create" title="Sanal Şirket Oluştur" subtitle="Şirket adı gir, meslek/şehir seç, profili yayınla" />
               )}
 
-              <QuickLink
-                href="/vip"
-                title="VIP Planları"
-                subtitle="Herkese açık • premium avantajlar"
-                badge="VIP"
-              />
-              <QuickLink
-                href="/messages"
-                title="Mesajlar"
-                subtitle="Ustalardan gelen mesajlara ulaş"
-              />
+              <QuickLink href="/vip" title="VIP Planları" subtitle="Herkese açık • premium avantajlar" badge="VIP" />
+              <QuickLink href="/messages" title="Mesajlar" subtitle="Ustalardan gelen mesajlara ulaş" />
 
-              {isPro && (
-                <QuickLink
-                  href="/highlight"
-                  title="Öne Çıkartma"
-                  subtitle="Sadece ustalar • görünürlüğünü artır"
-                  badge="Usta"
-                />
-              )}
+              {isPro && <QuickLink href="/highlight" title="Öne Çıkartma" subtitle="Sadece ustalar • görünürlüğünü artır" badge="Usta" />}
 
-              {isAdmin && (
-                <QuickLink
-                  href="/admin"
-                  title="Admin Paneli"
-                  subtitle="Sadece admin • yönetim ekranı"
-                  badge="Admin"
-                />
-              )}
+              {/* ✅ Admin Paneli burada da görünsün */}
+              {canSeeAdminPanel && <QuickLink href="/admin" title="Admin Paneli" subtitle="Yetkili hesaplar • yönetim ekranı" badge="Panel" />}
 
-              <QuickLink
-                href="/settings"
-                title="Ayarlar"
-                subtitle="Görünüm, hesap, bildirimler"
-              />
+              <QuickLink href="/settings" title="Ayarlar" subtitle="Görünüm, hesap, bildirimler" />
             </div>
 
-            {/* ✅ Durum kartında Pro Profil ID kaldırıldı */}
             <div className="mt-8 rounded-2xl border border-zinc-800/70 bg-zinc-950/40 p-4">
               <div className="text-sm font-semibold">Durum</div>
-              <div className="mt-1 text-xs text-zinc-300">
-                Hoş geldin, {meta?.displayName ?? "Kullanıcı"}
-              </div>
+              <div className="mt-1 text-xs text-zinc-300">Hoş geldin, {meta?.displayName ?? "Kullanıcı"}</div>
             </div>
           </div>
         </div>
       </main>
 
       {/* Live Support Button */}
-      <Link
-        href="/support"
-        className="fixed bottom-5 right-5 z-40 group"
-        aria-label="Canlı Destek"
-      >
+      <Link href="/support" className="fixed bottom-5 right-5 z-40 group" aria-label="Canlı Destek">
         <div className="relative">
           <div className="absolute inset-0 rounded-2xl blur-xl opacity-35 bg-orange-500 group-hover:opacity-55 transition" />
           <div className="relative h-14 w-14 rounded-2xl bg-orange-500 hover:bg-orange-400 text-black shadow-[0_18px_70px_rgba(249,115,22,0.35)] border border-orange-200/30 flex items-center justify-center transition">
@@ -388,21 +361,12 @@ export default function HomePage() {
       {/* Drawer */}
       {drawerOpen && (
         <div className="fixed inset-0 z-50">
-          <div
-            className="absolute inset-0 bg-black/60 backdrop-blur-sm"
-            onClick={closeDrawer}
-          />
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={closeDrawer} />
           <aside className="absolute left-3 top-3 bottom-3 w-[320px] max-w-[88vw] rounded-3xl border border-zinc-800/70 bg-zinc-950/70 backdrop-blur-xl shadow-[0_30px_120px_rgba(0,0,0,0.65)] p-4">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
                 <div className="relative h-10 w-10 rounded-2xl border border-zinc-700/60 bg-zinc-950/50 shadow overflow-hidden">
-                  <Image
-                    src={logoSrc}
-                    alt="Repairoo"
-                    width={40}
-                    height={40}
-                    className="h-full w-full object-cover"
-                  />
+                  <Image src={logoSrc} alt="Repairoo" width={40} height={40} className="h-full w-full object-cover" />
                 </div>
                 <div className="leading-tight">
                   <div className="text-base font-extrabold">
@@ -422,103 +386,38 @@ export default function HomePage() {
             </div>
 
             <div className="mt-4 rounded-2xl border border-zinc-800/70 bg-zinc-950/40 p-3">
-              <div className="text-sm font-semibold">
-                {loadingMeta ? "Yükleniyor…" : meta?.displayName ?? "Kullanıcı"}
-              </div>
-              <div className="mt-1 text-xs text-zinc-300">
-                Hesabın aktif. Menüler kullanıma hazır.
-              </div>
+              <div className="text-sm font-semibold">{loadingMeta ? "Yükleniyor…" : meta?.displayName ?? "Kullanıcı"}</div>
+              <div className="mt-1 text-xs text-zinc-300">Hesabın aktif. Menüler kullanıma hazır.</div>
             </div>
 
             <nav className="mt-4 grid gap-2">
-              <DrawerItem
-                href="/discover"
-                title="Usta Bul"
-                desc="Meslek & şehir seçerek ara"
-                onClick={closeDrawer}
-              />
+              <DrawerItem href="/discover" title="Usta Bul" desc="Meslek & şehir seçerek ara" onClick={closeDrawer} />
 
-              {/* ✅ Şirket Profilim / Sanal Şirket Oluştur */}
               {hasProProfile ? (
-                <DrawerItem
-                  href={`/pro/${effectiveProId}`}
-                  title="Şirket Profilim"
-                  desc="Şirket/usta profilini görüntüle"
-                  // ✅ badge kaldırıldı
-                  onClick={closeDrawer}
-                />
+                <DrawerItem href={`/pro/${effectiveProId}`} title="Şirket Profilim" desc="Şirket/usta profilini görüntüle" onClick={closeDrawer} />
               ) : (
-                <DrawerItem
-                  href="/pro/create"
-                  title="Sanal Şirket Oluştur"
-                  desc="Şirket adı gir, meslek/şehir seç, profili yayınla"
-                  // ✅ badge kaldırıldı
-                  onClick={closeDrawer}
-                />
+                <DrawerItem href="/pro/create" title="Sanal Şirket Oluştur" desc="Şirket adı gir, meslek/şehir seç, profili yayınla" onClick={closeDrawer} />
               )}
 
-              <DrawerItem
-                href="/vip"
-                title="VIP Planları"
-                desc="Herkese açık"
-                onClick={closeDrawer}
-              />
-              <DrawerItem
-                href="/settings"
-                title="Ayarlar"
-                desc="Görünüm, hesap, bildirim"
-                onClick={closeDrawer}
-              />
+              <DrawerItem href="/vip" title="VIP Planları" desc="Herkese açık" onClick={closeDrawer} />
+              <DrawerItem href="/settings" title="Ayarlar" desc="Görünüm, hesap, bildirim" onClick={closeDrawer} />
 
               <div className="h-px bg-zinc-800/70 my-2" />
 
-              <DrawerItem
-                href="/profile"
-                title="Kullanıcı Profili"
-                desc="Profilini görüntüle"
-                onClick={closeDrawer}
-              />
-              <DrawerItem
-                href="/profile/edit"
-                title="Profil Düzenle"
-                desc="Bilgilerini güncelle"
-                onClick={closeDrawer}
-              />
-              <DrawerItem
-                href="/messages"
-                title="Mesajlar"
-                desc="Ustalardan gelen mesajlar"
-                onClick={closeDrawer}
-              />
+              <DrawerItem href="/profile" title="Kullanıcı Profili" desc="Profilini görüntüle" onClick={closeDrawer} />
+              <DrawerItem href="/profile/edit" title="Profil Düzenle" desc="Bilgilerini güncelle" onClick={closeDrawer} />
+              <DrawerItem href="/messages" title="Mesajlar" desc="Ustalardan gelen mesajlar" onClick={closeDrawer} />
 
-              {isPro && (
-                <DrawerItem
-                  href="/highlight"
-                  title="Öne Çıkartma"
-                  desc="Sadece ustalar"
-                  badge="Usta"
-                  onClick={closeDrawer}
-                />
-              )}
+              {isPro && <DrawerItem href="/highlight" title="Öne Çıkartma" desc="Sadece ustalar" badge="Usta" onClick={closeDrawer} />}
 
-              {isAdmin && (
-                <DrawerItem
-                  href="/admin"
-                  title="Admin"
-                  desc="Sadece admin hesaplar"
-                  badge="Admin"
-                  onClick={closeDrawer}
-                />
+              {/* ✅ Admin Paneli drawer'da */}
+              {canSeeAdminPanel && (
+                <DrawerItem href="/admin" title="Admin Paneli" desc="Yetkili hesaplar" badge="Panel" onClick={closeDrawer} />
               )}
 
               <div className="h-px bg-zinc-800/70 my-2" />
 
-              <DrawerItem
-                href="/support"
-                title="Canlı Destek"
-                desc="Hızlı yardım"
-                onClick={closeDrawer}
-              />
+              <DrawerItem href="/support" title="Canlı Destek" desc="Hızlı yardım" onClick={closeDrawer} />
 
               <button
                 onClick={handleLogout}
@@ -527,18 +426,14 @@ export default function HomePage() {
                 <div className="flex items-center justify-between">
                   <div>
                     <div className="text-sm font-semibold">Çıkış Yap</div>
-                    <div className="mt-0.5 text-xs text-zinc-300">
-                      Hesabından çık
-                    </div>
+                    <div className="mt-0.5 text-xs text-zinc-300">Hesabından çık</div>
                   </div>
                   <span className="text-xs text-zinc-400">→</span>
                 </div>
               </button>
             </nav>
 
-            <div className="mt-4 text-[11px] text-zinc-500">
-              © {new Date().getFullYear()} Repairoo • Premium deneyim
-            </div>
+            <div className="mt-4 text-[11px] text-zinc-500">© {new Date().getFullYear()} Repairoo • Premium deneyim</div>
           </aside>
         </div>
       )}
@@ -616,10 +511,7 @@ function QuickLink({
   badge?: string;
 }) {
   return (
-    <Link
-      href={href}
-      className="rounded-2xl border border-zinc-800/70 bg-zinc-950/40 hover:bg-zinc-900/45 transition px-4 py-3"
-    >
+    <Link href={href} className="rounded-2xl border border-zinc-800/70 bg-zinc-950/40 hover:bg-zinc-900/45 transition px-4 py-3">
       <div className="flex items-center justify-between">
         <div>
           <div className="text-sm font-semibold">{title}</div>

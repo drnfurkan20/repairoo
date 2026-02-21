@@ -14,6 +14,7 @@ import {
   query,
   setDoc,
   where,
+  serverTimestamp,
 } from "firebase/firestore";
 import { auth, db } from "@/lib/firebase";
 
@@ -48,6 +49,9 @@ type AppUserMeta = {
   displayName?: string;
   proId?: string;
 };
+
+// ✅ KALICI founder whitelist (localhost + vercel)
+const FOUNDER_EMAILS = ["drnfurkan20@gmail.com"].map((x) => x.toLowerCase());
 
 const CITIES: City[] = [
   { plate: "01", name: "Adana" },
@@ -227,6 +231,20 @@ function safeStr(v: any, fallback = "") {
   return typeof v === "string" && v.trim() ? v.trim() : fallback;
 }
 
+function normalizeRole(v: any): AppRole {
+  const raw = typeof v === "string" ? v.trim().toLowerCase() : "user";
+  if (raw === "founder") return "founder";
+  if (raw === "headmod") return "headmod";
+  if (raw === "admin") return "admin";
+  if (raw === "moderator") return "moderator";
+  return "user";
+}
+
+function normalizeAccountType(v: any): AccountType {
+  const raw = typeof v === "string" ? v.trim().toLowerCase() : "user";
+  return raw === "pro" ? "pro" : "user";
+}
+
 export default function DiscoverPage() {
   const router = useRouter();
 
@@ -290,23 +308,41 @@ export default function DiscoverPage() {
       }
 
       try {
-        const ref = doc(db, "users", u.uid);
-        const snap = await getDoc(ref);
-        const data = snap.exists() ? (snap.data() as any) : null;
+        const userRef = doc(db, "users", u.uid);
+        const snap = await getDoc(userRef);
 
-        // ✅ UPDATED: role okuma (yapıyı bozmadan)
-        const rawRole = typeof data?.role === "string" ? String(data.role) : "user";
-        const role: AppRole =
-          rawRole === "founder" ||
-          rawRole === "headmod" ||
-          rawRole === "admin" ||
-          rawRole === "moderator"
-            ? (rawRole as AppRole)
-            : "user";
+        // ✅ users doc yoksa oluştur (prod/local karışınca çok oluyor)
+        if (!snap.exists()) {
+          await setDoc(
+            userRef,
+            {
+              role: "user",
+              accountType: "user",
+              displayName: u.displayName || "Kullanıcı",
+              email: u.email || null,
+              createdAt: serverTimestamp(),
+              updatedAt: serverTimestamp(),
+            },
+            { merge: true }
+          );
+        }
 
-        const accountType: AccountType = data?.accountType === "pro" ? "pro" : "user";
+        const snap2 = snap.exists() ? snap : await getDoc(userRef);
+        const data = snap2.exists() ? (snap2.data() as any) : {};
+
+        // ✅ KALICI: founder whitelist (localhost + vercel)
+        const email = (u.email || "").toLowerCase();
+        const isFounderByEmail = !!email && FOUNDER_EMAILS.includes(email);
+
+        const role: AppRole = isFounderByEmail ? "founder" : normalizeRole(data?.role);
+        const accountType = normalizeAccountType(data?.accountType);
+
+        // founder ise db'ye de yaz (bir kere otursun)
+        if (isFounderByEmail && data?.role !== "founder") {
+          await setDoc(userRef, { role: "founder", updatedAt: serverTimestamp() }, { merge: true });
+        }
+
         const proIdFromUser = typeof data?.proId === "string" ? data.proId : undefined;
-
         const proIdAuto = proIdFromUser || (await resolveMyPro(u.uid));
 
         setMyProId(proIdAuto || null);
@@ -321,8 +357,22 @@ export default function DiscoverPage() {
         });
 
         if (proIdAuto && (!data?.proId || data?.accountType !== "pro")) {
-          await setDoc(doc(db, "users", u.uid), { accountType: "pro", proId: proIdAuto }, { merge: true });
+          await setDoc(
+            userRef,
+            { accountType: "pro", proId: proIdAuto, updatedAt: serverTimestamp() },
+            { merge: true }
+          );
         }
+
+        console.log("[META]", {
+          uid: u.uid,
+          email: u.email,
+          rawRole: data?.role,
+          normalizedRole: role,
+          accountType: finalAccountType,
+          proId: proIdAuto || null,
+          projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID,
+        });
       } catch (e) {
         console.error("meta load error:", e);
         const auto = await resolveMyPro(u.uid);
@@ -343,24 +393,22 @@ export default function DiscoverPage() {
 
   const isAuthed = !!fbUser;
 
-  // ✅ UPDATED: admin panel linki görebilecek roller (yapı bozulmadan isAdmin kullanılıyor)
-  const isAdmin =
-    meta?.role === "admin" ||
-    meta?.role === "headmod" ||
+  // ✅ Admin Panel’i görebilen roller: founder + headmod + admin + moderator (canlı destek ekibi)
+  const canSeeAdminPanel =
     meta?.role === "founder" ||
+    meta?.role === "headmod" ||
+    meta?.role === "admin" ||
     meta?.role === "moderator";
 
   const isPro = meta?.accountType === "pro";
   const hasProProfile = !!(myProId || meta?.proId);
   const effectiveProId = (meta?.proId || myProId) ?? undefined;
 
-  // ✅ City ekranına kategori seçmeden gelinirse otomatik category'e geri at
   useEffect(() => {
     if (step === "city" && !selectedCategory) setStep("category");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step]);
 
-  // ✅ Results ekranına şehir/meslek eksik girilirse crash olmasın
   useEffect(() => {
     if (step === "results" && (!selectedCategory || !selectedCity)) {
       setStep(selectedCategory ? "city" : "category");
@@ -402,7 +450,6 @@ export default function DiscoverPage() {
     });
   }, [cityQuery]);
 
-  // ✅ Fix: önce yeni şema, boşsa fallback
   const fetchPros = useCallback(async (category: Category, city: City) => {
     setLoadingPros(true);
     setProsError(null);
@@ -697,9 +744,7 @@ export default function DiscoverPage() {
                   <div>Adres: İstanbul, Türkiye</div>
                 </div>
 
-                <div className="pt-3 text-[11px] text-zinc-500">
-                  © {new Date().getFullYear()} Repairoo. Tüm hakları saklıdır.
-                </div>
+                <div className="pt-3 text-[11px] text-zinc-500">© {new Date().getFullYear()} Repairoo. Tüm hakları saklıdır.</div>
               </div>
             </div>
           )}
@@ -1020,11 +1065,11 @@ export default function DiscoverPage() {
               )}
 
               {/* ✅ Admin Panel linki: founder/headmod/admin/moderator */}
-              {isAdmin && (
+              {canSeeAdminPanel && (
                 <DrawerItem
                   href="/admin"
                   title="Admin Paneli"
-                  desc="Yetkili hesaplar"
+                  desc="Yetkili hesaplar (Founder/HeadMod/Admin/Mod)"
                   badge="Panel"
                   onClick={() => setDrawerOpen(false)}
                 />
