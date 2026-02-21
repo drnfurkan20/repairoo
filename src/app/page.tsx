@@ -1,12 +1,20 @@
 "use client";
 
-console.log("ENV TEST:", process.env.NEXT_PUBLIC_FIREBASE_API_KEY);
 import Image from "next/image";
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { onAuthStateChanged, signOut, User } from "firebase/auth";
-import { doc, getDoc } from "firebase/firestore";
+import {
+  collection,
+  doc,
+  getDoc,
+  getDocs,
+  limit,
+  query,
+  setDoc,
+  where,
+} from "firebase/firestore";
 import { auth, db } from "@/lib/firebase";
 
 type AppRole = "admin" | "user";
@@ -17,6 +25,7 @@ type AppUserMeta = {
   accountType: AccountType;
   displayName?: string;
   photoURL?: string;
+  proId?: string; // ✅ ekledik
 };
 
 export default function HomePage() {
@@ -27,17 +36,33 @@ export default function HomePage() {
   const [meta, setMeta] = useState<AppUserMeta | null>(null);
   const [loadingMeta, setLoadingMeta] = useState(true);
 
-  // 🔒 NEW: sayfa açılır açılmaz giriş kontrol (flicker olmasın)
+  // sayfa açılır açılmaz giriş kontrol (flicker olmasın)
   const [checkingAuth, setCheckingAuth] = useState(true);
 
   const logoSrc = useMemo(() => "/logo.png", []);
+
+  // ✅ proId yoksa pros içinden ownerUid ile bul
+  const resolveMyPro = useCallback(async (uid: string) => {
+    try {
+      const qy = query(
+        collection(db, "pros"),
+        where("ownerUid", "==", uid),
+        limit(1)
+      );
+      const snap = await getDocs(qy);
+      if (snap.empty) return null;
+      return snap.docs[0].id;
+    } catch (e) {
+      console.error("resolveMyPro error:", e);
+      return null;
+    }
+  }, []);
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
       setFbUser(u);
       setLoadingMeta(true);
 
-      // 🔒 NEW: giriş yoksa direkt auth'a at
       if (!u) {
         setMeta(null);
         setLoadingMeta(false);
@@ -47,23 +72,46 @@ export default function HomePage() {
       }
 
       try {
-        // users/{uid} -> role/accountType
+        // users/{uid}
         const ref = doc(db, "users", u.uid);
         const snap = await getDoc(ref);
 
         const data = snap.exists() ? (snap.data() as any) : null;
+
         const role: AppRole = data?.role === "admin" ? "admin" : "user";
-        const accountType: AccountType =
+        const accountTypeRaw: AccountType =
           data?.accountType === "pro" ? "pro" : "user";
+
+        const proIdFromUser =
+          typeof data?.proId === "string" && data.proId.trim().length > 0
+            ? data.proId.trim()
+            : undefined;
+
+        // ✅ users’da yoksa pros’dan bul
+        const proIdAuto = proIdFromUser || (await resolveMyPro(u.uid));
+
+        // ✅ proId varsa accountType’ı pro yap (gerçek durum)
+        const finalAccountType: AccountType = proIdAuto ? "pro" : accountTypeRaw;
 
         setMeta({
           role,
-          accountType,
+          accountType: finalAccountType,
           displayName: data?.displayName || u.displayName || "Kullanıcı",
           photoURL: data?.photoURL || u.photoURL || undefined,
+          proId: proIdAuto || undefined,
         });
-      } catch {
-        // publish-ready: hata olsa bile user olarak devam
+
+        // ✅ bulunduysa users doc’u güncelle ki bir daha aramasın
+        if (proIdAuto && (!proIdFromUser || accountTypeRaw !== "pro")) {
+          await setDoc(
+            doc(db, "users", u.uid),
+            { accountType: "pro", proId: proIdAuto },
+            { merge: true }
+          );
+        }
+      } catch (e) {
+        console.error("meta load error:", e);
+        // hata olsa bile user olarak devam
         setMeta({
           role: "user",
           accountType: "user",
@@ -77,11 +125,15 @@ export default function HomePage() {
     });
 
     return () => unsub();
-  }, [router]);
+  }, [router, resolveMyPro]);
 
   const isAuthed = !!fbUser;
   const isAdmin = meta?.role === "admin";
   const isPro = meta?.accountType === "pro";
+
+  // ✅ Şirket profilim linki buradan beslenecek
+  const effectiveProId = meta?.proId;
+  const hasProProfile = !!effectiveProId;
 
   const closeDrawer = () => setDrawerOpen(false);
 
@@ -91,7 +143,6 @@ export default function HomePage() {
     router.replace("/auth");
   };
 
-  // 🔒 NEW: auth kontrol ekranı (sayfa göz kırpmasın)
   if (checkingAuth) {
     return (
       <div className="min-h-screen bg-zinc-950 text-white flex items-center justify-center">
@@ -100,7 +151,6 @@ export default function HomePage() {
     );
   }
 
-  // 🔒 NEW: ekstra emniyet (router.replace zaten yapıyor)
   if (!isAuthed) return null;
 
   return (
@@ -157,7 +207,6 @@ export default function HomePage() {
             </div>
 
             <div className="flex items-center gap-2">
-              {/* Artık giriş zorunlu: sadece Usta Bul + Çıkış */}
               <Link
                 href="/discover"
                 className="inline-flex items-center justify-center rounded-2xl px-4 py-2 bg-orange-500 hover:bg-orange-400 text-black text-sm font-extrabold transition shadow-[0_18px_60px_rgba(249,115,22,0.26)]"
@@ -249,6 +298,24 @@ export default function HomePage() {
                 subtitle="Meslek & şehir seçerek ara"
                 badge="Önerilen"
               />
+
+              {/* ✅ Şirket Profilim / Sanal Şirket Oluştur */}
+              {hasProProfile ? (
+                <QuickLink
+                  href={`/pro/${effectiveProId}`}
+                  title="Şirket Profilim"
+                  subtitle="Şirket/usta profilini görüntüle"
+                  // ✅ badge kaldırıldı (premium dursun)
+                />
+              ) : (
+                <QuickLink
+                  href="/pro/create"
+                  title="Sanal Şirket Oluştur"
+                  subtitle="Şirket adı gir, meslek/şehir seç, profili yayınla"
+                  // ✅ badge kaldırıldı (premium dursun)
+                />
+              )}
+
               <QuickLink
                 href="/vip"
                 title="VIP Planları"
@@ -286,6 +353,7 @@ export default function HomePage() {
               />
             </div>
 
+            {/* ✅ Durum kartında Pro Profil ID kaldırıldı */}
             <div className="mt-8 rounded-2xl border border-zinc-800/70 bg-zinc-950/40 p-4">
               <div className="text-sm font-semibold">Durum</div>
               <div className="mt-1 text-xs text-zinc-300">
@@ -311,7 +379,6 @@ export default function HomePage() {
                 stroke="currentColor"
                 strokeWidth="2"
                 strokeLinecap="round"
-                strokeLinejoin="round"
               />
             </svg>
           </div>
@@ -370,6 +437,26 @@ export default function HomePage() {
                 desc="Meslek & şehir seçerek ara"
                 onClick={closeDrawer}
               />
+
+              {/* ✅ Şirket Profilim / Sanal Şirket Oluştur */}
+              {hasProProfile ? (
+                <DrawerItem
+                  href={`/pro/${effectiveProId}`}
+                  title="Şirket Profilim"
+                  desc="Şirket/usta profilini görüntüle"
+                  // ✅ badge kaldırıldı
+                  onClick={closeDrawer}
+                />
+              ) : (
+                <DrawerItem
+                  href="/pro/create"
+                  title="Sanal Şirket Oluştur"
+                  desc="Şirket adı gir, meslek/şehir seç, profili yayınla"
+                  // ✅ badge kaldırıldı
+                  onClick={closeDrawer}
+                />
+              )}
+
               <DrawerItem
                 href="/vip"
                 title="VIP Planları"
@@ -484,7 +571,6 @@ export default function HomePage() {
             background-position: 240% 50%;
           }
         }
-
         @keyframes shineMove {
           0% {
             transform: translateX(-90px) rotate(12deg);

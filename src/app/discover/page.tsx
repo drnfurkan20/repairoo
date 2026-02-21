@@ -10,10 +10,10 @@ import {
   doc,
   getDoc,
   getDocs,
-  query,
-  where,
   limit,
+  query,
   setDoc,
+  where,
 } from "firebase/firestore";
 import { auth, db } from "@/lib/firebase";
 
@@ -28,7 +28,7 @@ type Category = {
 
 type City = { plate: string; name: string };
 
-type Pro = {
+type ProCard = {
   id: string;
   companyName: string;
   displayName: string;
@@ -39,13 +39,14 @@ type Pro = {
   sponsored?: boolean;
 };
 
-type AppRole = "admin" | "user";
+// ✅ UPDATED: role sistemi genişledi (yapı bozulmadan)
+type AppRole = "founder" | "headmod" | "admin" | "moderator" | "user";
 type AccountType = "pro" | "user";
 type AppUserMeta = {
   role: AppRole;
   accountType: AccountType;
   displayName?: string;
-  proId?: string; // pro doc id
+  proId?: string;
 };
 
 const CITIES: City[] = [
@@ -218,6 +219,14 @@ function trLower(s: string) {
   return (s || "").toLocaleLowerCase("tr-TR");
 }
 
+function safeNum(v: any, fallback = 0) {
+  return typeof v === "number" && Number.isFinite(v) ? v : fallback;
+}
+
+function safeStr(v: any, fallback = "") {
+  return typeof v === "string" && v.trim() ? v.trim() : fallback;
+}
+
 export default function DiscoverPage() {
   const router = useRouter();
 
@@ -236,7 +245,7 @@ export default function DiscoverPage() {
   const [cityQuery, setCityQuery] = useState("");
 
   const [loadingPros, setLoadingPros] = useState(false);
-  const [pros, setPros] = useState<Pro[]>([]);
+  const [pros, setPros] = useState<ProCard[]>([]);
   const [prosError, setProsError] = useState<string | null>(null);
 
   const [myProId, setMyProId] = useState<string | null>(null);
@@ -244,10 +253,15 @@ export default function DiscoverPage() {
 
   const resolveMyPro = useCallback(async (uid: string) => {
     try {
-      const qy = query(collection(db, "pros"), where("ownerUid", "==", uid), limit(1));
-      const snap = await getDocs(qy);
-      if (snap.empty) return null;
-      return snap.docs[0].id;
+      const q1 = query(collection(db, "pros"), where("ownerUid", "==", uid), limit(1));
+      const s1 = await getDocs(q1);
+      if (!s1.empty) return s1.docs[0].id;
+
+      const q2 = query(collection(db, "pros"), where("ownerUId", "==", uid), limit(1));
+      const s2 = await getDocs(q2);
+      if (!s2.empty) return s2.docs[0].id;
+
+      return null;
     } catch (e) {
       console.error("resolveMyPro error:", e);
       return null;
@@ -280,7 +294,16 @@ export default function DiscoverPage() {
         const snap = await getDoc(ref);
         const data = snap.exists() ? (snap.data() as any) : null;
 
-        const role: AppRole = data?.role === "admin" ? "admin" : "user";
+        // ✅ UPDATED: role okuma (yapıyı bozmadan)
+        const rawRole = typeof data?.role === "string" ? String(data.role) : "user";
+        const role: AppRole =
+          rawRole === "founder" ||
+          rawRole === "headmod" ||
+          rawRole === "admin" ||
+          rawRole === "moderator"
+            ? (rawRole as AppRole)
+            : "user";
+
         const accountType: AccountType = data?.accountType === "pro" ? "pro" : "user";
         const proIdFromUser = typeof data?.proId === "string" ? data.proId : undefined;
 
@@ -298,11 +321,7 @@ export default function DiscoverPage() {
         });
 
         if (proIdAuto && (!data?.proId || data?.accountType !== "pro")) {
-          await setDoc(
-            doc(db, "users", u.uid),
-            { accountType: "pro", proId: proIdAuto },
-            { merge: true }
-          );
+          await setDoc(doc(db, "users", u.uid), { accountType: "pro", proId: proIdAuto }, { merge: true });
         }
       } catch (e) {
         console.error("meta load error:", e);
@@ -323,9 +342,31 @@ export default function DiscoverPage() {
   }, [router, resolveMyPro]);
 
   const isAuthed = !!fbUser;
-  const isAdmin = meta?.role === "admin";
+
+  // ✅ UPDATED: admin panel linki görebilecek roller (yapı bozulmadan isAdmin kullanılıyor)
+  const isAdmin =
+    meta?.role === "admin" ||
+    meta?.role === "headmod" ||
+    meta?.role === "founder" ||
+    meta?.role === "moderator";
+
   const isPro = meta?.accountType === "pro";
   const hasProProfile = !!(myProId || meta?.proId);
+  const effectiveProId = (meta?.proId || myProId) ?? undefined;
+
+  // ✅ City ekranına kategori seçmeden gelinirse otomatik category'e geri at
+  useEffect(() => {
+    if (step === "city" && !selectedCategory) setStep("category");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step]);
+
+  // ✅ Results ekranına şehir/meslek eksik girilirse crash olmasın
+  useEffect(() => {
+    if (step === "results" && (!selectedCategory || !selectedCity)) {
+      setStep(selectedCategory ? "city" : "category");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step]);
 
   const allGroups = useMemo(() => {
     const set = new Set<string>();
@@ -361,55 +402,100 @@ export default function DiscoverPage() {
     });
   }, [cityQuery]);
 
-  const fetchPros = async (category: Category, city: City) => {
+  // ✅ Fix: önce yeni şema, boşsa fallback
+  const fetchPros = useCallback(async (category: Category, city: City) => {
     setLoadingPros(true);
     setProsError(null);
     setPros([]);
-
     try {
-      const qy = query(
+      // 1) Yeni şema
+      try {
+        const qy1 = query(
+          collection(db, "pros"),
+          where("categoryId", "==", category.id),
+          where("city", "==", city.name),
+          where("isVisible", "==", true)
+        );
+
+        const snap1 = await getDocs(qy1);
+
+        const mapped1: ProCard[] = snap1.docs
+          .map((d) => {
+            const data = d.data() as any;
+            if (data?.isDeleted === true) return null;
+
+            const ratingAvg = safeNum(data?.ratingAvg, safeNum(data?.rating, 0));
+            const ratingCount = safeNum(data?.ratingCount, safeNum(data?.reviews, 0));
+
+            return {
+              id: d.id,
+              companyName: safeStr(data?.companyName, "Şirket"),
+              displayName: safeStr(data?.displayName, "Usta"),
+              city: safeStr(data?.city, city.name),
+              categoryId: safeStr(data?.categoryId, category.id),
+              rating: ratingAvg || 0,
+              reviews: ratingCount || 0,
+              sponsored: !!data?.isSponsored,
+            } as ProCard;
+          })
+          .filter(Boolean) as ProCard[];
+
+        if (mapped1.length > 0) {
+          const sponsored = mapped1.filter((x) => x.sponsored);
+          const normal = mapped1.filter((x) => !x.sponsored);
+          setPros([...sponsored, ...normal]);
+          return;
+        }
+      } catch (e1: any) {
+        console.error("fetchPros primary query error (categoryId+city):", e1);
+      }
+
+      // 2) Fallback: eski şema
+      const qy2 = query(
         collection(db, "pros"),
         where("isVisible", "==", true),
         where("cities", "array-contains", city.name)
       );
 
-      const snap = await getDocs(qy);
+      const snap2 = await getDocs(qy2);
 
-      const rawList: Pro[] = snap.docs.map((d) => {
-        const data = d.data() as any;
-        return {
-          id: d.id,
-          companyName: data?.companyName || "Şirket",
-          displayName: data?.displayName || "Usta",
-          city: data?.city || city.name,
-          categoryId: category.id,
-          rating: typeof data?.rating === "number" ? data.rating : 4.8,
-          reviews: typeof data?.reviews === "number" ? data.reviews : 0,
-          sponsored: !!data?.isSponsored,
-        };
-      });
-
-      const filtered = snap.docs
-        .map((d, idx) => {
+      const mapped2: ProCard[] = snap2.docs
+        .map((d) => {
           const data = d.data() as any;
+          if (data?.isDeleted === true) return null;
+
           const professions: string[] = Array.isArray(data?.professions) ? data.professions : [];
           const ok = professions.includes(category.name);
-          return ok ? rawList[idx] : null;
-        })
-        .filter(Boolean) as Pro[];
+          if (!ok) return null;
 
-      const sponsored = filtered.filter((x) => x.sponsored);
-      const normal = filtered.filter((x) => !x.sponsored);
-      setPros([...sponsored, ...normal]);
+          const ratingAvg = safeNum(data?.ratingAvg, safeNum(data?.rating, 0));
+          const ratingCount = safeNum(data?.ratingCount, safeNum(data?.reviews, 0));
+
+          return {
+            id: d.id,
+            companyName: safeStr(data?.companyName, "Şirket"),
+            displayName: safeStr(data?.displayName, "Usta"),
+            city: safeStr(data?.city, city.name),
+            categoryId: category.id,
+            rating: ratingAvg || 0,
+            reviews: ratingCount || 0,
+            sponsored: !!data?.isSponsored,
+          } as ProCard;
+        })
+        .filter(Boolean) as ProCard[];
+
+      const sponsored2 = mapped2.filter((x) => x.sponsored);
+      const normal2 = mapped2.filter((x) => !x.sponsored);
+      setPros([...sponsored2, ...normal2]);
     } catch (e: any) {
-      console.error("fetchPros error:", e);
+      console.error("fetchPros fatal error:", e);
       setProsError(e?.message ? `Hata: ${e.message}` : "Ustaları çekerken hata oldu. Tekrar dene.");
     } finally {
       setLoadingPros(false);
     }
-  };
+  }, []);
 
-  const resetFlow = () => {
+  const resetFlow = useCallback(() => {
     setStep("home");
     setSelectedCategory(null);
     setSelectedCity(null);
@@ -419,7 +505,7 @@ export default function DiscoverPage() {
     setPros([]);
     setProsError(null);
     setLoadingPros(false);
-  };
+  }, []);
 
   if (checkingAuth) {
     return (
@@ -430,8 +516,6 @@ export default function DiscoverPage() {
   }
 
   if (!isAuthed) return null;
-
-  const effectiveProId = (meta?.proId || myProId) ?? undefined;
 
   return (
     <div className="min-h-screen bg-zinc-950 text-white relative overflow-hidden">
@@ -528,10 +612,6 @@ export default function DiscoverPage() {
           {/* HOME */}
           {step === "home" && (
             <div className="mt-7">
-              {/* ... geri kalan UI aynen ... */}
-              {/* Senin içerik burada aynı kalıyor: yapıyı bozmadım */}
-              {/* Ben kısa tuttum diye silmedim; aşağıda devam ediyor */}
-              {/* (DEVAM) */}
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                 <div className="rounded-2xl border border-zinc-800/70 bg-zinc-950/40 p-6">
                   <div className="text-sm font-semibold">1) Meslek seç</div>
@@ -571,15 +651,19 @@ export default function DiscoverPage() {
                 </div>
               </div>
 
-              {/* (Aşağısı senin kodunla aynı devam ediyor) */}
-              {/* Not: Burada yer kısıtı olmasın diye aynen bırakıyorum: senin verdiğin kodun geri kalanı değişmedi */}
               <div className="mt-6 grid grid-cols-1 lg:grid-cols-3 gap-4">
                 <div className="rounded-2xl border border-zinc-800/70 bg-zinc-950/35 p-6">
                   <div className="text-sm font-extrabold text-zinc-100">Nasıl Kullanılır?</div>
                   <div className="mt-4 space-y-3 text-xs text-zinc-300">
-                    <div><span className="text-orange-400 font-semibold">1.</span> Mesleği seç.</div>
-                    <div><span className="text-orange-400 font-semibold">2.</span> Şehrini belirle.</div>
-                    <div><span className="text-orange-400 font-semibold">3.</span> Ustayı incele, iletişime geç.</div>
+                    <div>
+                      <span className="text-orange-400 font-semibold">1.</span> Mesleği seç.
+                    </div>
+                    <div>
+                      <span className="text-orange-400 font-semibold">2.</span> Şehrini belirle.
+                    </div>
+                    <div>
+                      <span className="text-orange-400 font-semibold">3.</span> Ustayı incele, iletişime geç.
+                    </div>
                   </div>
                 </div>
 
@@ -613,7 +697,9 @@ export default function DiscoverPage() {
                   <div>Adres: İstanbul, Türkiye</div>
                 </div>
 
-                <div className="pt-3 text-[11px] text-zinc-500">© {new Date().getFullYear()} Repairoo. Tüm hakları saklıdır.</div>
+                <div className="pt-3 text-[11px] text-zinc-500">
+                  © {new Date().getFullYear()} Repairoo. Tüm hakları saklıdır.
+                </div>
               </div>
             </div>
           )}
@@ -638,7 +724,9 @@ export default function DiscoverPage() {
                     className="w-full rounded-2xl border border-zinc-800/70 bg-zinc-950/50 px-4 py-3 text-sm outline-none focus:border-orange-500/60"
                   >
                     {allGroups.map((g) => (
-                      <option key={g} value={g}>{g}</option>
+                      <option key={g} value={g}>
+                        {g}
+                      </option>
                     ))}
                   </select>
                 </div>
@@ -650,7 +738,8 @@ export default function DiscoverPage() {
                     Filtre: <span className="text-zinc-100 font-semibold">{groupFilter}</span>
                     {categoryQuery.trim() ? (
                       <>
-                        {" "}• Arama: <span className="text-zinc-100 font-semibold">"{categoryQuery.trim()}"</span>
+                        {" "}
+                        • Arama: <span className="text-zinc-100 font-semibold">"{categoryQuery.trim()}"</span>
                       </>
                     ) : null}
                   </div>
@@ -740,9 +829,13 @@ export default function DiscoverPage() {
                     <button
                       key={city.plate}
                       onClick={async () => {
+                        if (!selectedCategory) {
+                          setStep("category");
+                          return;
+                        }
                         setSelectedCity(city);
                         setStep("results");
-                        if (selectedCategory) await fetchPros(selectedCategory, city);
+                        await fetchPros(selectedCategory, city);
                       }}
                       className="text-left rounded-2xl border border-zinc-800/70 bg-zinc-950/40 hover:bg-zinc-900/55 transition px-4 py-3"
                     >
@@ -766,7 +859,8 @@ export default function DiscoverPage() {
               <div className="rounded-2xl border border-zinc-800/70 bg-zinc-950/35 p-4">
                 <div className="text-sm font-semibold">
                   {selectedCategory?.emoji} {selectedCategory?.name} •{" "}
-                  <span className="text-orange-300 font-extrabold">{selectedCity?.plate}</span> {selectedCity?.name}
+                  <span className="text-orange-300 font-extrabold">{selectedCity?.plate}</span>{" "}
+                  {selectedCity?.name}
                 </div>
                 <div className="mt-1 text-xs text-zinc-300">Sponsorlu ustalar üstte gösterilir.</div>
               </div>
@@ -813,7 +907,7 @@ export default function DiscoverPage() {
                           </div>
 
                           <div className="mt-2 text-xs text-zinc-400">
-                            ⭐ {p.rating.toFixed(1)} • {p.reviews} değerlendirme
+                            ⭐ {(p.rating || 0).toFixed(1)} • {p.reviews || 0} değerlendirme
                           </div>
                         </div>
                         <span className="text-xs text-zinc-400">→</span>
@@ -925,12 +1019,13 @@ export default function DiscoverPage() {
                 />
               )}
 
+              {/* ✅ Admin Panel linki: founder/headmod/admin/moderator */}
               {isAdmin && (
                 <DrawerItem
                   href="/admin"
-                  title="Admin"
-                  desc="Sadece admin hesaplar"
-                  badge="Admin"
+                  title="Admin Paneli"
+                  desc="Yetkili hesaplar"
+                  badge="Panel"
                   onClick={() => setDrawerOpen(false)}
                 />
               )}
@@ -978,16 +1073,32 @@ export default function DiscoverPage() {
           text-shadow: 0 0 24px rgba(255, 255, 255, 0.06);
         }
         @keyframes silverFlow {
-          0% { background-position: 0% 50%; }
-          100% { background-position: 240% 50%; }
+          0% {
+            background-position: 0% 50%;
+          }
+          100% {
+            background-position: 240% 50%;
+          }
         }
         @keyframes shineMove {
-          0% { transform: translateX(-90px) rotate(12deg); opacity: 0; }
-          12% { opacity: 0.35; }
-          45% { opacity: 0.12; }
-          100% { transform: translateX(160px) rotate(12deg); opacity: 0; }
+          0% {
+            transform: translateX(-90px) rotate(12deg);
+            opacity: 0;
+          }
+          12% {
+            opacity: 0.35;
+          }
+          45% {
+            opacity: 0.12;
+          }
+          100% {
+            transform: translateX(160px) rotate(12deg);
+            opacity: 0;
+          }
         }
-        .animate-shine { animation: shineMove 2.8s ease-in-out infinite; }
+        .animate-shine {
+          animation: shineMove 2.8s ease-in-out infinite;
+        }
       `}</style>
     </div>
   );
